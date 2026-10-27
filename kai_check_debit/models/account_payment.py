@@ -223,6 +223,9 @@ class AccountPayment(models.Model):
             'date': debit_date,
             'ref': ref,
             'partner_id': partner_id,
+            # Not account.move.payment_id: that field means this entry is the
+            # payment. The audit link is kai_check_debit_payment_id only.
+            'payment_id': False,
             'kai_check_debit_payment_id': self.id,
             'line_ids': [
                 Command.create({
@@ -255,6 +258,27 @@ class AccountPayment(models.Model):
         )
         self.env.invalidate_all()
 
+    def _kai_check_debit_move_context(self):
+        """Context for every ``account.move`` created while debiting.
+
+        The wizard is opened with ``default_payment_id``. That key is still
+        active on confirm. ``account.move`` has its own ``payment_id``, so
+        create copies the default onto the new entry. ``action_post`` then
+        calls ``payment.action_post()`` and posts the payment move, which
+        is already posted (``must be in draft``).
+
+        The wizard key is removed, then set to ``False``. ``default_get``
+        uses a present ``default_*`` context key as the field value, so the
+        debit move's ``payment_id`` stays empty instead of becoming the
+        payment. ``is_payment`` is dropped too: bank journals stay valid
+        through ``kai_check_debit_payment_id``.
+        """
+        ctx = dict(self.env.context)
+        ctx.pop('default_payment_id', None)
+        ctx['default_payment_id'] = False
+        ctx.pop('is_payment', None)
+        return ctx
+
     def action_kai_create_check_debit(self, journal, debit_date):
         """Post the transfer from the deferred liability to the bank account.
 
@@ -264,6 +288,8 @@ class AccountPayment(models.Model):
         the liability clears without an exchange-difference line.
         """
         self._kai_lock_for_debit()
+        # Covers the debit entry and any exchange move reconcile() creates.
+        self = self.with_context(self._kai_check_debit_move_context())
         moves = self.env['account.move']
         for pay in self:
             outstanding, bank_account, balance, amount_currency = pay._kai_ensure_can_debit_check(
@@ -272,7 +298,9 @@ class AccountPayment(models.Model):
             vals = pay._kai_prepare_check_debit_move_vals(
                 journal, debit_date, outstanding, bank_account, balance, amount_currency,
             )
-            move = self.env['account.move'].with_context(is_payment=True).create(vals)
+            # Last word before create: never the payment's own journal entry.
+            vals['payment_id'] = False
+            move = self.env['account.move'].create(vals)
             move.action_post()
             if outstanding.reconcile:
                 liquidity_lines = pay._kai_get_deferred_liquidity_lines().filtered(
@@ -313,6 +341,8 @@ class AccountPayment(models.Model):
             'view_mode': 'form',
             'target': 'new',
             'context': {
+                # Defaults the wizard's payment_id. Cleared again before the
+                # debit account.move is created (same field name on the move).
                 'default_payment_id': self.id,
                 'default_journal_id': self.journal_id.id,
                 'default_debit_date': fields.Date.context_today(self),

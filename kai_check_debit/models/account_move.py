@@ -24,8 +24,10 @@ class AccountMove(models.Model):
 
         A normal ``entry`` without ``payment_id`` is only valid on a
         miscellaneous journal. ``_compute_journal_id`` would otherwise
-        replace the bank journal. ``is_payment`` context is not stored,
-        so the link to the payment is what keeps the journal valid.
+        replace the bank journal. The stored ``kai_check_debit_payment_id``
+        link is what keeps the journal valid. ``is_payment`` is not used:
+        that context belongs to the payment's own entry, and posting a
+        move that Odoo treats as the payment syncs the already-posted one.
         """
         if len(self) == 1 and self.kai_check_debit_payment_id:
             return ['bank', 'cash']
