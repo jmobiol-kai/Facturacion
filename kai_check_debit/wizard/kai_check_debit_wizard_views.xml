@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_kai_check_debit_wizard_form" model="ir.ui.view">
+        <field name="name">kai.check.debit.wizard.form</field>
+        <field name="model">kai.check.debit.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Debitar cheque">
+                <group>
+                    <group>
+                        <field name="payment_id"/>
+                        <field name="check_number"/>
+                        <field name="company_id" invisible="1"/>
+                        <field name="currency_id" invisible="1"/>
+                        <field name="debit_date"/>
+                        <field name="journal_id"/>
+                    </group>
+                    <group>
+                        <field name="outstanding_account_id"/>
+                        <field name="bank_account_id"/>
+                        <field name="amount"/>
+                    </group>
+                </group>
+                <p class="text-muted">
+                    Se publica un asiento en el diario bancario: débito a la cuenta diferida
+                    del pago y crédito a la cuenta por defecto del diario, por el saldo
+                    todavía abierto. No hace falta un extracto bancario.
+                </p>
+                <footer>
+                    <button name="action_confirm" type="object" string="Debitar cheque" class="oe_highlight"/>
+                    <button string="Cancelar" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>

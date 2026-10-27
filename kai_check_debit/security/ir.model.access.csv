@@ -1,0 +1,2 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_kai_check_debit_wizard_user,kai.check.debit.wizard.user,model_kai_check_debit_wizard,account.group_account_user,1,1,1,1
