@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Debitar cheque diferido',
-    'version': '17.0.1.0.1',
+    'version': '17.0.1.0.2',
     'category': 'Accounting/Localizations',
     'summary': 'Pasa un cheque propio diferido de Cheques diferidos a pagar a la cuenta del banco',
     'description': """
@@ -14,13 +14,15 @@ En Odoo 17 Community, un pago a proveedor con cheque propio diferido
 (``outstanding_account_id``, p. ej. Cheques diferidos a pagar) en lugar de
 la cuenta del banco.
 
-Este módulo agrega el botón **Debitar cheque** en ese pago para generar,
-en la fecha elegida y sin extracto bancario, el asiento:
+Este módulo agrega el botón **Debitar cheque** en ese pago para registrar,
+en la fecha elegida, una línea de extracto en el diario bancario (importe
+negativo, sin extracto cerrado). El banco se acredita una sola vez en esa
+transacción, así que el Balance del tablero baja, y la contrapartida se
+concilia con el crédito diferido. No queda en Operaciones varias.
 
-* Débito: cuenta pendiente usada al emitir el cheque
-* Crédito: cuenta por defecto del diario bancario (``default_account_id``)
-
-El asiento queda vinculado al pago para auditoría y no se puede debitar dos veces.
+El asiento de la transacción queda vinculado al pago para auditoría y no se
+puede debitar dos veces. Para anularlo: restablecer el asiento a borrador y
+cancelarlo, o eliminar la línea de extracto.
     """,
     'author': 'jmobiol-kai',
     'license': 'LGPL-3',

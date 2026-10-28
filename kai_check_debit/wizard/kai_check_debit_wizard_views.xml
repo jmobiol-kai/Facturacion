@@ -21,9 +21,14 @@
                     </group>
                 </group>
                 <p class="text-muted">
-                    Se publica un asiento en el diario bancario: débito a la cuenta diferida
-                    del pago y crédito a la cuenta por defecto del diario, por el saldo
-                    todavía abierto. No hace falta un extracto bancario.
+                    Registra una transacción en el diario bancario (línea de extracto, sin
+                    extracto cerrado), con importe negativo y en la fecha indicada. Esa línea
+                    actualiza el Balance del tablero. La contrapartida se concilia con el
+                    crédito diferido del pago: el banco se acredita una sola vez y el
+                    movimiento no queda en Operaciones varias.
+                    Para anularlo y volver a habilitar el botón, abra el asiento, restablézcalo
+                    a borrador y cancélelo, o elimine la línea de extracto. No use Revertir:
+                    el reverso no lo saca de Balance.
                 </p>
                 <footer>
                     <button name="action_confirm" type="object" string="Debitar cheque" class="oe_highlight"/>
