@@ -1,15 +1,17 @@
 {
     'name': 'Resumen de cuenta en el contacto',
-    'summary': 'Total de movimientos publicados del contacto y listado al pulsarlo',
+    'summary': 'Suma con signo de los movimientos publicados del contacto',
     'description': """
 Botón Movimientos en el formulario del contacto.
 
-Muestra la suma de importes absolutos, en moneda de la compañía, de los
-comprobantes publicados del contacto y de sus hijos: facturas y notas de
-crédito de cliente y de proveedor, recibos de venta y de compra, cobros
-y pagos a proveedor. No es el saldo. Al pulsarlo abre el resumen de cuenta.
+Muestra la suma con signo, en moneda de la compañía, de los comprobantes
+publicados del contacto y de sus hijos. Las ventas suman igual que los
+cobros: facturas de cliente, recibos de venta y cobros. La nota de crédito
+de cliente resta. Las compras y los pagos restan: facturas de proveedor,
+recibos de compra y pagos a proveedor. La nota de crédito de proveedor
+suma. No es el saldo. Al pulsarlo abre el resumen de cuenta.
 """,
-    'version': '19.0.1.0.0',
+    'version': '19.0.1.0.1',
     'category': 'Accounting',
     'author': 'Kaizendo',
     'license': 'LGPL-3',
