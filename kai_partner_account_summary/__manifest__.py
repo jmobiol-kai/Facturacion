@@ -1,17 +1,18 @@
 {
     'name': 'Resumen de cuenta en el contacto',
-    'summary': 'Suma con signo de los movimientos publicados del contacto',
+    'summary': 'Debe, Haber y Saldo de los movimientos publicados del contacto',
     'description': """
 Botón Movimientos en el formulario del contacto.
 
-Muestra la suma con signo, en moneda de la compañía, de los comprobantes
-publicados del contacto y de sus hijos. Las ventas suman igual que los
-cobros: facturas de cliente, recibos de venta y cobros. La nota de crédito
-de cliente resta. Las compras y los pagos restan: facturas de proveedor,
-recibos de compra y pagos a proveedor. La nota de crédito de proveedor
-suma. No es el saldo. Al pulsarlo abre el resumen de cuenta.
+Muestra el total Debe − Haber, en moneda de la compañía, de los comprobantes
+publicados del contacto y de sus hijos. El Debe suma las ventas y los cobros:
+facturas de cliente, recibos de venta, cobros y notas de crédito de
+proveedor. El Haber suma las compras y los pagos: facturas de proveedor,
+recibos de compra, pagos a proveedor y notas de crédito de cliente. No es el
+saldo contable. Al pulsarlo abre el resumen con las columnas Debe, Haber y
+Saldo (Saldo de cada línea = Debe − Haber).
 """,
-    'version': '19.0.1.0.1',
+    'version': '19.0.1.1.0',
     'category': 'Accounting',
     'author': 'Kaizendo',
     'license': 'LGPL-3',
