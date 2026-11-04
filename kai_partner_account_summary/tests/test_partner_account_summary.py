@@ -115,20 +115,23 @@ class TestKaiPartnerAccountSummary(AccountTestInvoicingCommon):
         self.assertEqual(cobro.move_id.move_type, 'entry')
         self.assertEqual(cobro.move_id.state, 'posted')
 
+        # Side comes from the document, magnitude from the company-currency
+        # total. Odoo signs cobros like ventas and pagos like compras; this
+        # statement puts them on the opposite side, so do not sum those signs.
+        # Debe: out_invoice, out_receipt, in_refund, pago.
+        # Haber: out_refund, in_invoice, in_receipt, cobro.
         included = (
-            invoice.amount_total_signed
-            + refund.amount_total_signed
-            + bill.amount_total_signed
-            + vendor_refund.amount_total_signed
-            + sale_receipt.amount_total_signed
-            + purchase_receipt.amount_total_signed
-            + child_invoice.amount_total_signed
-            + cobro.amount_company_currency_signed
-            + pago.amount_company_currency_signed
+            abs(invoice.amount_total_signed)
+            - abs(refund.amount_total_signed)
+            - abs(bill.amount_total_signed)
+            + abs(vendor_refund.amount_total_signed)
+            + abs(sale_receipt.amount_total_signed)
+            - abs(purchase_receipt.amount_total_signed)
+            + abs(child_invoice.amount_total_signed)
+            - abs(cobro.amount_company_currency_signed)
+            + abs(pago.amount_company_currency_signed)
         )
-        # Sales and cobros add. Customer credit notes subtract.
-        # Purchases and pagos subtract. Vendor credit notes add back.
-        self.assertAlmostEqual(included, 100 - 30 - 20 + 5 + 10 - 8 + 12 + 15 - 7, places=2)
+        self.assertAlmostEqual(included, 100 - 30 - 20 + 5 + 10 - 8 + 12 - 15 + 7, places=2)
         self.assertAlmostEqual(self.partner.kai_total_movimientos, included, places=2)
         self.assertAlmostEqual(self.child.kai_total_movimientos, 12.0, places=2)
         self.assertAlmostEqual(self.other.kai_total_movimientos, 40.0, places=2)
@@ -162,11 +165,11 @@ class TestKaiPartnerAccountSummary(AccountTestInvoicingCommon):
         self.assertEqual(opened['res_model'], 'account.payment')
         self.assertEqual(opened['res_id'], cobro.id)
         self.assertEqual(cobro_line.document_type, 'customer_inbound')
-        self._assert_sides(cobro_line, 15.0, 0.0)
+        self._assert_sides(cobro_line, 0.0, 15.0)
         pago_line = lines.filtered(lambda line: line.payment_id == pago)
         self.assertEqual(pago_line.document_type, 'supplier_outbound')
-        self._assert_sides(pago_line, 0.0, 7.0)
-        # Sales and cobros sit on Debe. Customer credit notes sit on Haber.
+        self._assert_sides(pago_line, 7.0, 0.0)
+        # Sales sit on Debe. Customer credit notes and cobros sit on Haber.
         self._assert_sides(invoice_line, 100.0, 0.0)
         self._assert_sides(
             lines.filtered(lambda line: line.move_id == refund and not line.payment_id),
@@ -178,7 +181,7 @@ class TestKaiPartnerAccountSummary(AccountTestInvoicingCommon):
             10.0,
             0.0,
         )
-        # Purchases and pagos sit on Haber. Vendor credit notes sit on Debe.
+        # Purchases sit on Haber. Vendor credit notes and pagos sit on Debe.
         self._assert_sides(
             lines.filtered(lambda line: line.move_id == bill and not line.payment_id),
             0.0,
@@ -200,50 +203,52 @@ class TestKaiPartnerAccountSummary(AccountTestInvoicingCommon):
             0.0,
         )
 
-    def test_customer_documents_add_and_credit_note_reduces(self):
+    def test_customer_invoice_is_debit_cobro_and_credit_note_are_credit(self):
         partner = self.env['res.partner'].create({'name': 'Kai Solo ventas'})
         self._move('out_invoice', partner, 100.0)
         self._move('out_receipt', partner, 10.0)
         self._payment(partner, 40.0, 'inbound', 'customer')
-        self.assertAlmostEqual(partner.kai_total_movimientos, 150.0, places=2)
+        # Ventas on Debe, cobro on Haber: 110 − 40.
+        self.assertAlmostEqual(partner.kai_total_movimientos, 70.0, places=2)
         self.assertGreater(partner.kai_total_movimientos, 0.0)
 
         lines = self.env['kai.partner.account.summary.line'].search([
             ('partner_id', '=', partner.id),
         ])
-        self.assertAlmostEqual(sum(lines.mapped('debit')), 150.0, places=2)
-        self.assertAlmostEqual(sum(lines.mapped('credit')), 0.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('debit')), 110.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('credit')), 40.0, places=2)
 
         self._move('out_refund', partner, 25.0)
         partner.invalidate_recordset(['kai_total_movimientos'])
-        self.assertAlmostEqual(partner.kai_total_movimientos, 125.0, places=2)
+        self.assertAlmostEqual(partner.kai_total_movimientos, 45.0, places=2)
         lines = self.env['kai.partner.account.summary.line'].search([
             ('partner_id', '=', partner.id),
         ])
-        self.assertAlmostEqual(sum(lines.mapped('debit')), 150.0, places=2)
-        self.assertAlmostEqual(sum(lines.mapped('credit')), 25.0, places=2)
-        self.assertAlmostEqual(sum(lines.mapped('amount')), 125.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('debit')), 110.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('credit')), 65.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('amount')), 45.0, places=2)
 
-    def test_vendor_documents_subtract_and_credit_note_adds_back(self):
+    def test_vendor_bill_is_credit_pago_and_credit_note_are_debit(self):
         partner = self.env['res.partner'].create({'name': 'Kai Solo compras'})
         self._move('in_invoice', partner, 80.0)
         self._move('in_receipt', partner, 8.0)
         self._payment(partner, 20.0, 'outbound', 'supplier')
-        self.assertAlmostEqual(partner.kai_total_movimientos, -108.0, places=2)
+        # Compras on Haber, pago on Debe: 20 − 88.
+        self.assertAlmostEqual(partner.kai_total_movimientos, -68.0, places=2)
         self.assertLess(partner.kai_total_movimientos, 0.0)
 
         lines = self.env['kai.partner.account.summary.line'].search([
             ('partner_id', '=', partner.id),
         ])
-        self.assertAlmostEqual(sum(lines.mapped('debit')), 0.0, places=2)
-        self.assertAlmostEqual(sum(lines.mapped('credit')), 108.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('debit')), 20.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('credit')), 88.0, places=2)
 
         self._move('in_refund', partner, 10.0)
         partner.invalidate_recordset(['kai_total_movimientos'])
-        self.assertAlmostEqual(partner.kai_total_movimientos, -98.0, places=2)
+        self.assertAlmostEqual(partner.kai_total_movimientos, -58.0, places=2)
         lines = self.env['kai.partner.account.summary.line'].search([
             ('partner_id', '=', partner.id),
         ])
-        self.assertAlmostEqual(sum(lines.mapped('debit')), 10.0, places=2)
-        self.assertAlmostEqual(sum(lines.mapped('credit')), 108.0, places=2)
-        self.assertAlmostEqual(sum(lines.mapped('amount')), -98.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('debit')), 30.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('credit')), 88.0, places=2)
+        self.assertAlmostEqual(sum(lines.mapped('amount')), -58.0, places=2)
