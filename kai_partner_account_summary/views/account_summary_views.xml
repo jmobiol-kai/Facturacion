@@ -10,7 +10,9 @@
                 <field name="document_type"/>
                 <field name="name"/>
                 <field name="partner_id"/>
-                <field name="amount" sum="Total"/>
+                <field name="debit" sum="Debe"/>
+                <field name="credit" sum="Haber"/>
+                <field name="amount" sum="Saldo"/>
                 <field name="company_id" groups="base.group_multi_company" optional="hide"/>
                 <button name="action_open_document" type="object" icon="fa-external-link" title="Abrir"/>
             </list>
@@ -35,6 +37,8 @@
                         </group>
                         <group>
                             <field name="currency_id" invisible="1"/>
+                            <field name="debit"/>
+                            <field name="credit"/>
                             <field name="amount"/>
                             <field name="company_id" groups="base.group_multi_company"/>
                             <field name="document_ref"/>
