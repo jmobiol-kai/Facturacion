@@ -11,7 +11,7 @@
                         icon="fa-list-alt"
                         name="action_kai_view_account_summary"
                         groups="account.group_account_invoice,account.group_account_readonly"
-                        help="Suma de facturas, notas de crédito, recibos, cobros y pagos publicados">
+                        help="Suma con signo: ventas y cobros suman; compras y pagos restan">
                     <div class="o_form_field o_stat_info">
                         <span class="o_stat_value">
                             <field name="currency_id" invisible="1"/>

@@ -10,22 +10,26 @@ class ResPartner(models.Model):
         currency_field='currency_id',
         groups='account.group_account_invoice,account.group_account_readonly',
         help=(
-            'Suma de los importes absolutos, en moneda de la compañía, de los '
-            'comprobantes publicados del contacto y de sus contactos hijos: '
-            'facturas y notas de crédito de cliente y de proveedor, recibos de '
-            'venta y de compra, cobros de cliente y pagos a proveedor. '
-            'Es el total de movimientos, no el saldo.'
+            'Suma con signo, en moneda de la compañía, de los comprobantes '
+            'publicados del contacto y de sus contactos hijos. Las ventas y '
+            'los cobros suman: factura de cliente, recibo de venta y cobro. '
+            'La nota de crédito de cliente resta. Las compras y los pagos '
+            'restan: factura de proveedor, recibo de compra y pago a '
+            'proveedor. La nota de crédito de proveedor suma. Es el total de '
+            'movimientos, no el saldo.'
         ),
     )
 
     @api.depends_context('company', 'allowed_company_ids')
     def _compute_kai_total_movimientos(self):
-        """Sum absolute posted document totals, including child contacts.
+        """Signed sum of posted document totals, including child contacts.
 
-        Same partner scope as ``total_invoiced`` (``child_of``), but the
-        amount is the document total in company currency (``amount_total_signed``
-        and the payment's company amount), not the residual and not the net
-        of invoices minus refunds.
+        Same partner scope as ``total_invoiced`` (``child_of``). The amount
+        is the document total in company currency. Customer invoices, sale
+        receipts and inbound customer payments add. Customer credit notes
+        subtract. Vendor bills, purchase receipts and outbound vendor
+        payments subtract. Vendor credit notes add back. It is not the open
+        balance: an invoice and its collection both count on the sales side.
         """
         self.kai_total_movimientos = 0.0
         partners = self.filtered('id')

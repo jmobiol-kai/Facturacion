@@ -88,7 +88,11 @@ class KaiPartnerAccountSummaryLine(models.Model):
                 move.partner_id AS partner_id,
                 move.company_id AS company_id,
                 company.currency_id AS currency_id,
-                ABS(move.amount_total_signed) AS amount,
+                -- amount_total_signed is already the company-currency total
+                -- with the sign this summary uses: customer invoices, sale
+                -- receipts and vendor refunds are positive; customer credit
+                -- notes, vendor bills and purchase receipts are negative.
+                move.amount_total_signed AS amount,
                 move.id AS move_id,
                 NULL::integer AS payment_id,
                 ('account.move,' || move.id::text) AS document_ref
@@ -111,7 +115,10 @@ class KaiPartnerAccountSummaryLine(models.Model):
                 payment.partner_id AS partner_id,
                 payment.company_id AS company_id,
                 company.currency_id AS currency_id,
-                ABS(payment.amount_company_currency_signed) AS amount,
+                -- Inbound customer payments (cobros) are positive and
+                -- outbound vendor payments (pagos) are negative, same sign
+                -- as amount_company_currency_signed.
+                payment.amount_company_currency_signed AS amount,
                 payment.move_id AS move_id,
                 payment.id AS payment_id,
                 ('account.payment,' || payment.id::text) AS document_ref
