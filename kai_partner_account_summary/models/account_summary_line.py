@@ -6,14 +6,25 @@ from odoo.tools import SQL
 # Posted customer and vendor invoices, refunds and receipts.
 # Receipts are account.move documents. Payments are separate account.payment
 # records whose journal entry is an 'entry', so they are not counted twice.
-MOVE_TYPES = (
+#
+# The column is chosen from the document nature, not from the sign Odoo stores
+# on amount_total_signed. That sign puts cobros on the same side as ventas and
+# pagos on the same side as compras, which is the opposite of this statement.
+# Debe (adds to the line saldo): customer invoices and sale receipts, vendor
+# credit notes (less of what we owe) and supplier payments.
+# Haber (subtracts): vendor bills and purchase receipts, customer credit notes
+# (less of what the partner owes us) and customer payments.
+DEBIT_MOVE_TYPES = (
     'out_invoice',
+    'out_receipt',
+    'in_refund',
+)
+CREDIT_MOVE_TYPES = (
     'out_refund',
     'in_invoice',
-    'in_refund',
-    'out_receipt',
     'in_receipt',
 )
+MOVE_TYPES = DEBIT_MOVE_TYPES + CREDIT_MOVE_TYPES
 
 # Odoo 19 posts a payment by moving it to in_process or paid and posting move_id.
 POSTED_PAYMENT_STATES = ('in_process', 'paid')
@@ -65,9 +76,9 @@ class KaiPartnerAccountSummaryLine(models.Model):
         currency_field='currency_id',
         readonly=True,
         help=(
-            'Ventas y cobros, en moneda de la compañía: factura de cliente, '
-            'recibo de venta, cobro y nota de crédito de proveedor. Siempre '
-            'cero o positivo.'
+            'Ventas y pagos a proveedor, en moneda de la compañía: factura de '
+            'cliente, recibo de venta, pago y nota de crédito de proveedor. '
+            'Siempre cero o positivo.'
         ),
     )
     credit = fields.Monetary(
@@ -75,9 +86,9 @@ class KaiPartnerAccountSummaryLine(models.Model):
         currency_field='currency_id',
         readonly=True,
         help=(
-            'Compras y pagos, en moneda de la compañía: factura de proveedor, '
-            'recibo de compra, pago a proveedor y nota de crédito de cliente. '
-            'Siempre cero o positivo.'
+            'Compras y cobros, en moneda de la compañía: factura de proveedor, '
+            'recibo de compra, cobro y nota de crédito de cliente. Siempre '
+            'cero o positivo.'
         ),
     )
     amount = fields.Monetary(
@@ -85,10 +96,11 @@ class KaiPartnerAccountSummaryLine(models.Model):
         currency_field='currency_id',
         readonly=True,
         help=(
-            'Saldo de la línea: Debe menos Haber. Positivo en ventas y cobros, '
-            'negativo en compras y pagos. La suma de la columna es el total '
-            'del botón Movimientos. No es un saldo acumulado ni el saldo '
-            'contable: la factura y su cobro suman los dos.'
+            'Saldo de la línea: Debe menos Haber. Positivo en ventas y pagos '
+            'a proveedor, negativo en compras y cobros. La suma de la columna '
+            'es el total del botón Movimientos. La factura de cliente queda en '
+            'el Debe y su cobro en el Haber. No es un saldo acumulado ni el '
+            'saldo del mayor: solo entran estos comprobantes y pagos publicados.'
         ),
     )
     move_id = fields.Many2one('account.move', string='Comprobante', readonly=True)
@@ -114,21 +126,24 @@ class KaiPartnerAccountSummaryLine(models.Model):
                 move.partner_id AS partner_id,
                 move.company_id AS company_id,
                 company.currency_id AS currency_id,
-                -- amount_total_signed is already the company-currency total
-                -- with the sign this summary uses: customer invoices, sale
-                -- receipts, inbound customer payments and vendor refunds are
-                -- positive (Debe); customer credit notes, vendor bills,
-                -- purchase receipts and outbound vendor payments are
-                -- negative (Haber). Saldo is that signed amount (Debe − Haber).
+                -- Magnitude is the company-currency total. The side comes from
+                -- move_type: out_invoice, out_receipt and in_refund are Debe;
+                -- out_refund, in_invoice and in_receipt are Haber. Odoo signs
+                -- amount_total_signed the same way for a normal document, but
+                -- a negative price must not flip the column.
                 CASE
-                    WHEN move.amount_total_signed > 0 THEN move.amount_total_signed
+                    WHEN move.move_type IN %s THEN ABS(move.amount_total_signed)
                     ELSE 0 * move.amount_total_signed
                 END AS debit,
                 CASE
-                    WHEN move.amount_total_signed < 0 THEN -move.amount_total_signed
+                    WHEN move.move_type IN %s THEN ABS(move.amount_total_signed)
                     ELSE 0 * move.amount_total_signed
                 END AS credit,
-                move.amount_total_signed AS amount,
+                CASE
+                    WHEN move.move_type IN %s THEN ABS(move.amount_total_signed)
+                    WHEN move.move_type IN %s THEN -ABS(move.amount_total_signed)
+                    ELSE 0 * move.amount_total_signed
+                END AS amount,
                 move.id AS move_id,
                 NULL::integer AS payment_id,
                 ('account.move,' || move.id::text) AS document_ref
@@ -151,20 +166,33 @@ class KaiPartnerAccountSummaryLine(models.Model):
                 payment.partner_id AS partner_id,
                 payment.company_id AS company_id,
                 company.currency_id AS currency_id,
-                -- Inbound customer payments (cobros) are positive (Debe) and
-                -- outbound vendor payments (pagos) are negative (Haber), same
-                -- sign as amount_company_currency_signed.
+                -- Cobros (inbound customer) reduce what the partner owes us,
+                -- so they are Haber. Pagos (outbound supplier) reduce what we
+                -- owe, so they are Debe. amount_company_currency_signed is
+                -- positive for every inbound payment and negative for every
+                -- outbound one, which is the opposite side; use the absolute
+                -- value and classify by payment_type and partner_type.
                 CASE
-                    WHEN payment.amount_company_currency_signed > 0
-                        THEN payment.amount_company_currency_signed
+                    WHEN payment.payment_type = 'outbound'
+                     AND payment.partner_type = 'supplier'
+                        THEN ABS(payment.amount_company_currency_signed)
                     ELSE 0 * payment.amount_company_currency_signed
                 END AS debit,
                 CASE
-                    WHEN payment.amount_company_currency_signed < 0
-                        THEN -payment.amount_company_currency_signed
+                    WHEN payment.payment_type = 'inbound'
+                     AND payment.partner_type = 'customer'
+                        THEN ABS(payment.amount_company_currency_signed)
                     ELSE 0 * payment.amount_company_currency_signed
                 END AS credit,
-                payment.amount_company_currency_signed AS amount,
+                CASE
+                    WHEN payment.payment_type = 'outbound'
+                     AND payment.partner_type = 'supplier'
+                        THEN ABS(payment.amount_company_currency_signed)
+                    WHEN payment.payment_type = 'inbound'
+                     AND payment.partner_type = 'customer'
+                        THEN -ABS(payment.amount_company_currency_signed)
+                    ELSE 0 * payment.amount_company_currency_signed
+                END AS amount,
                 payment.move_id AS move_id,
                 payment.id AS payment_id,
                 ('account.payment,' || payment.id::text) AS document_ref
@@ -180,6 +208,10 @@ class KaiPartnerAccountSummaryLine(models.Model):
                  OR (payment.payment_type = 'outbound' AND payment.partner_type = 'supplier')
               )
             """,
+            DEBIT_MOVE_TYPES,
+            CREDIT_MOVE_TYPES,
+            DEBIT_MOVE_TYPES,
+            CREDIT_MOVE_TYPES,
             MOVE_TYPES,
             POSTED_PAYMENT_STATES,
         )

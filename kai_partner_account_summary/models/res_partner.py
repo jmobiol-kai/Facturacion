@@ -12,25 +12,25 @@ class ResPartner(models.Model):
         help=(
             'Total Debe − Haber, en moneda de la compañía, de los comprobantes '
             'publicados del contacto y de sus contactos hijos. El Debe suma '
-            'las ventas y los cobros: factura de cliente, recibo de venta, '
-            'cobro y nota de crédito de proveedor. El Haber suma las compras '
-            'y los pagos: factura de proveedor, recibo de compra, pago a '
-            'proveedor y nota de crédito de cliente. Es el total de '
-            'movimientos, no el saldo contable: la factura y su cobro suman '
-            'los dos.'
+            'las ventas y los pagos a proveedor: factura de cliente, recibo '
+            'de venta, pago y nota de crédito de proveedor. El Haber suma las '
+            'compras y los cobros: factura de proveedor, recibo de compra, '
+            'cobro y nota de crédito de cliente. Es la suma del Saldo de cada '
+            'línea, no el saldo del mayor.'
         ),
     )
 
     @api.depends_context('company', 'allowed_company_ids')
     def _compute_kai_total_movimientos(self):
-        """Signed sum of posted document totals, including child contacts.
+        """Sum of line saldos of posted documents, including child contacts.
 
-        Same partner scope as ``total_invoiced`` (``child_of``). The amount
-        is the line saldo (Debe − Haber) in company currency. Customer
-        invoices, sale receipts, inbound customer payments and vendor credit
-        notes are Debe. Customer credit notes, vendor bills, purchase
-        receipts and outbound vendor payments are Haber. It is not the open
-        balance: an invoice and its collection both count on the Debe side.
+        Same partner scope as ``total_invoiced`` (``child_of``). Each line
+        saldo is Debe − Haber in company currency. Customer invoices, sale
+        receipts, vendor credit notes and supplier payments are Debe.
+        Customer credit notes, vendor bills, purchase receipts and customer
+        payments are Haber. A customer invoice and its cobro therefore
+        offset. It is not the general-ledger partner balance: only these
+        posted documents are included.
         """
         self.kai_total_movimientos = 0.0
         partners = self.filtered('id')

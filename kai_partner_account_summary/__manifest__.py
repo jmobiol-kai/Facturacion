@@ -5,14 +5,14 @@
 Botón Movimientos en el formulario del contacto.
 
 Muestra el total Debe − Haber, en moneda de la compañía, de los comprobantes
-publicados del contacto y de sus hijos. El Debe suma las ventas y los cobros:
-facturas de cliente, recibos de venta, cobros y notas de crédito de
-proveedor. El Haber suma las compras y los pagos: facturas de proveedor,
-recibos de compra, pagos a proveedor y notas de crédito de cliente. No es el
-saldo contable. Al pulsarlo abre el resumen con las columnas Debe, Haber y
-Saldo (Saldo de cada línea = Debe − Haber).
+publicados del contacto y de sus hijos. El Debe suma las ventas y los pagos
+a proveedor: facturas de cliente, recibos de venta, pagos y notas de crédito
+de proveedor. El Haber suma las compras y los cobros: facturas de proveedor,
+recibos de compra, cobros y notas de crédito de cliente. No es el saldo del
+mayor. Al pulsarlo abre el resumen con las columnas Debe, Haber y Saldo
+(Saldo de cada línea = Debe − Haber).
 """,
-    'version': '19.0.1.1.0',
+    'version': '19.0.1.2.0',
     'category': 'Accounting',
     'author': 'Kaizendo',
     'license': 'LGPL-3',
