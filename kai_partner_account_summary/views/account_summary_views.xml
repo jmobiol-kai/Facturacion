@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_kai_partner_account_summary_list" model="ir.ui.view">
+        <field name="name">kai.partner.account.summary.line.list</field>
+        <field name="model">kai.partner.account.summary.line</field>
+        <field name="arch" type="xml">
+            <list create="false" edit="false" delete="false" default_order="date desc, name desc">
+                <field name="currency_id" column_invisible="1"/>
+                <field name="date"/>
+                <field name="document_type"/>
+                <field name="name"/>
+                <field name="partner_id"/>
+                <field name="amount" sum="Total"/>
+                <field name="company_id" groups="base.group_multi_company" optional="hide"/>
+                <button name="action_open_document" type="object" icon="fa-external-link" title="Abrir"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_kai_partner_account_summary_form" model="ir.ui.view">
+        <field name="name">kai.partner.account.summary.line.form</field>
+        <field name="model">kai.partner.account.summary.line</field>
+        <field name="arch" type="xml">
+            <form create="false" edit="false" delete="false">
+                <header>
+                    <button name="action_open_document" type="object" string="Abrir documento" class="oe_highlight"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="date"/>
+                            <field name="document_type"/>
+                            <field name="name"/>
+                            <field name="partner_id"/>
+                        </group>
+                        <group>
+                            <field name="currency_id" invisible="1"/>
+                            <field name="amount"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="document_ref"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_kai_partner_account_summary_search" model="ir.ui.view">
+        <field name="name">kai.partner.account.summary.line.search</field>
+        <field name="model">kai.partner.account.summary.line</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="partner_id"/>
+                <field name="document_type"/>
+                <filter name="customer" string="Cliente"
+                        domain="[('document_type', 'in', ('out_invoice', 'out_refund', 'out_receipt', 'customer_inbound'))]"/>
+                <filter name="vendor" string="Proveedor"
+                        domain="[('document_type', 'in', ('in_invoice', 'in_refund', 'in_receipt', 'supplier_outbound'))]"/>
+                <group>
+                    <filter name="group_document_type" string="Tipo" context="{'group_by': 'document_type'}"/>
+                    <filter name="group_partner" string="Contacto" context="{'group_by': 'partner_id'}"/>
+                    <filter name="group_date" string="Fecha" context="{'group_by': 'date'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_kai_partner_account_summary" model="ir.actions.act_window">
+        <field name="name">Resumen de cuenta</field>
+        <field name="res_model">kai.partner.account.summary.line</field>
+        <field name="view_mode">list,form</field>
+        <field name="context">{'create': False, 'edit': False, 'delete': False}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No hay movimientos publicados para este contacto.
+            </p>
+        </field>
+    </record>
+</odoo>
