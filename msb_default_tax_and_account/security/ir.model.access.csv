@@ -1,0 +1,5 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_account_journal_tax_mapping_manager,account.journal.tax.mapping manager,model_account_journal_tax_mapping,account.group_account_manager,1,1,1,1
+access_account_journal_tax_mapping_user,account.journal.tax.mapping user,model_account_journal_tax_mapping,account.group_account_user,1,1,1,0
+access_account_journal_tax_mapping_invoice,account.journal.tax.mapping invoice,model_account_journal_tax_mapping,account.group_account_invoice,1,0,0,0
+access_msb_recompute_taxes_simple_wizard,msb.recompute.taxes.simple.wizard,model_msb_recompute_taxes_simple_wizard,base.group_user,1,1,1,1

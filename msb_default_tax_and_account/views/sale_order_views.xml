@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Sale Order Form View - Show Journal and Tax Information -->
+    <record id="view_order_form_inherit_msb_default_tax_and_account" model="ir.ui.view">
+        <field name="name">sale.order.form.inherit.msb_default_tax_and_account</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+
+            <!-- Hidden field for backward compatibility -->
+            <div class="oe_button_box" position="before">
+                <field name="tax_recompute_needed" invisible="1"/>
+            </div>
+            
+            <!-- Add journal field after payment_term_id in the header -->
+            <field name="payment_term_id" position="after">
+                <field name="journal_id" 
+                       string="Diario de Facturación"
+                       domain="[('type', '=', 'sale'), ('company_id', '=', company_id)]"
+                       options="{'no_create': True}"
+                       help="Diario que se utilizará para la facturación. Si tiene impuestos configurados, estos se aplicarán a las líneas del pedido."
+                       invisible="0"/>
+            </field>
+
+            <!-- Add information about journal taxes in the order lines -->
+            <xpath expr="//field[@name='order_line']/list/field[@name='tax_ids']" position="after">
+                <field name="impuestos_diario" string="Impuestos del Diario" optional="hide"
+                       help="Impuestos configurados en el diario de facturación"
+                       invisible="1"/>
+                <field name="usar_cuenta_diario" invisible="1"/>
+            </xpath>
+
+            <!-- Add journal tax information in order line form view -->
+            <xpath expr="//field[@name='order_line']/form//field[@name='tax_ids']" position="after">
+                <field name="impuestos_diario" string="Impuestos del Diario" readonly="1"
+                       invisible="not impuestos_diario"
+                       help="Estos son los impuestos configurados en el diario de facturación"
+                       widget="many2many_tags"/>
+                <field name="usar_cuenta_diario" invisible="1"/>
+                <div invisible="not impuestos_diario" class="o_td_label mt-2">
+                    <div class="text-info">
+                        <i class="fa fa-info-circle"/> Los impuestos mostrados arriba provienen de la configuración del diario de facturación.
+                        Puede modificarlos manualmente si es necesario.
+                    </div>
+                </div>
+                <div invisible="not usar_cuenta_diario" class="o_td_label mt-2">
+                    <div class="text-info">
+                        <i class="fa fa-info-circle"/> La cuenta contable será tomada del diario de facturación durante la creación de la factura.
+                    </div>
+                </div>
+            </xpath>
+
+        </field>
+    </record>
+
+
+</odoo>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_recompute_taxes_simple_wizard" model="ir.ui.view">
+        <field name="name">msb.recompute.taxes.simple.wizard.form</field>
+        <field name="model">msb.recompute.taxes.simple.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Recalcular Impuestos" create="false" edit="false">
+                <div class="container-fluid" style="padding: 20px;">
+                    <field name="message" nolabel="1" readonly="1" widget="html"/>
+                </div>
+                <footer>
+                    <button name="action_confirm" string="Confirmar Recálculo" type="object" class="btn-primary"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_recompute_taxes_simple_wizard" model="ir.actions.act_window">
+        <field name="name">Recalcular Impuestos</field>
+        <field name="res_model">msb.recompute.taxes.simple.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="view_id" ref="view_recompute_taxes_simple_wizard"/>
+        <field name="target">new</field>
+        <field name="context">{}</field>
+    </record>
+</odoo>
