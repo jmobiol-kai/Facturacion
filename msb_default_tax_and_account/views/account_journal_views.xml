@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Extender Vista de Formulario de Diario Contable -->
+    <record id="view_account_journal_form_inherit_tax_mappings" model="ir.ui.view">
+        <field name="name">account.journal.form.tax.mappings.inherit</field>
+        <field name="model">account.journal</field>
+        <field name="inherit_id" ref="account.view_account_journal_form"/>
+        <field name="arch" type="xml">
+            <!--
+                Insert after the sale/purchase/general default_account_id, not the
+                first one. account.view_account_journal_form puts one visible
+                <label for="default_account_id"> (span 1) and then two nolabel
+                fields: bank/cash/credit, then sale/purchase/general. Only one of
+                those fields is visible, so the label and that field share a row.
+                //field[@name='default_account_id'] matches the bank/cash/credit
+                field and would drop these nodes between the label and the
+                sale/purchase field. On sale and purchase journals that shifts
+                the 2-column grid: Private Share Account, Dedicated Credit Note
+                Sequence and Dedicated Debit Note Sequence end up with the label
+                in the value column and the widget in the label column.
+                suspense_account_id is the first node after both fields.
+            -->
+            <xpath expr="//page[@name='bank_account']//field[@name='suspense_account_id']" position="before">
+
+                <!-- Account Settings (unchanged) -->
+                <field name="usar_cuenta_defecto_facturas"
+                       invisible="type != 'sale'"
+                       help="Si está activado, las líneas de factura usarán la cuenta por defecto del diario en lugar de la cuenta del producto."/>
+                <field name="usar_cuenta_defecto_compras"
+                       invisible="type != 'purchase'"
+                       help="Si está activado, las líneas de factura de proveedor usarán la cuenta por defecto del diario en lugar de la cuenta del producto/categoría."/>
+
+                <!-- NEW: Tax Mappings Section -->
+                <separator string="Mapeos de Impuestos" invisible="type not in ('sale', 'purchase')"/>
+
+                <!-- Sales Tax Mappings -->
+                <field name="sale_tax_mapping_ids"
+                       invisible="type != 'sale'"
+                       nolabel="1"
+                       colspan="2"
+                       domain="[('tax_type', '=', 'sale')]"
+                       context="{'default_tax_type': 'sale'}"
+                       views="{'list': 'msb_default_tax_and_account.view_account_journal_tax_mapping_inline_tree'}"/>
+
+                <!-- Purchase Tax Mappings -->
+                <field name="purchase_tax_mapping_ids"
+                       invisible="type != 'purchase'"
+                       nolabel="1"
+                       colspan="2"
+                       domain="[('tax_type', '=', 'purchase')]"
+                       context="{'default_tax_type': 'purchase'}"
+                       views="{'list': 'msb_default_tax_and_account.view_account_journal_tax_mapping_inline_tree'}"/>
+
+                <!-- Removed legacy static tax fields from the form -->
+
+            </xpath>
+        </field>
+    </record>
+</odoo>

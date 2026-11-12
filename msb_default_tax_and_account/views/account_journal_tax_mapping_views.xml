@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Inline Tree for Journal Form (compact) -->
+    <record id="view_account_journal_tax_mapping_inline_tree" model="ir.ui.view">
+        <field name="name">account.journal.tax.mapping.inline.tree</field>
+        <field name="model">account.journal.tax.mapping</field>
+        <field name="arch" type="xml">
+            <list string="Mapeos de Impuestos" editable="bottom">
+                <field name="company_id" invisible="1"/>
+                <field name="journal_id" invisible="1"/>
+                <field name="tax_type" invisible="1"/>
+                <field name="original_tax_id" string="Impuesto Original"
+                       options="{'no_create': True}"
+                       domain="[('type_tax_use', '=', tax_type), '|', ('company_id', '=', company_id), ('company_id', 'parent_of', company_id)]"/>
+                <field name="replacement_tax_id" string="→ Reemplazar con"
+                       options="{'no_create': True}"
+                       domain="[('type_tax_use', '=', tax_type), '|', ('company_id', '=', company_id), ('company_id', 'parent_of', company_id)]"/>
+                <field name="active" widget="boolean_toggle"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Tax Mapping Form View -->
+    <record id="view_account_journal_tax_mapping_form" model="ir.ui.view">
+        <field name="name">account.journal.tax.mapping.form</field>
+        <field name="model">account.journal.tax.mapping</field>
+        <field name="arch" type="xml">
+            <form string="Mapeo de Impuestos">
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <field name="active" widget="boolean_button" 
+                               options="{'terminology': 'active'}" />
+                    </div>
+                    
+                    <group>
+                        <group>
+                            <field name="journal_id" options="{'no_create': True, 'no_open': True}"/>
+                            <field name="tax_type" widget="radio" options="{'horizontal': true}"/>
+                            <field name="company_id" invisible="1"/>
+                        </group>
+                        <group>
+                            <!-- Empty group for layout -->
+                        </group>
+                    </group>
+                    
+                    <group>
+                        <group string="Mapeo de Impuestos">
+                            <field name="original_tax_id" 
+                                   options="{'no_create': True}"
+                                   domain="[('type_tax_use', '=', tax_type), '|', ('company_id', '=', company_id), ('company_id', 'parent_of', company_id)]"/>
+                            <field name="original_tax_name" readonly="1" 
+                                   string="Nombre del Impuesto Original"/>
+                        </group>
+                        <group>
+                            <label for="replacement_tax_id" string="→ Se mapea a"/>
+                            <field name="replacement_tax_id" 
+                                   options="{'no_create': True}"
+                                   domain="[('type_tax_use', '=', tax_type), '|', ('company_id', '=', company_id), ('company_id', 'parent_of', company_id)]"/>
+                            <field name="replacement_tax_name" readonly="1" 
+                                   string="Nombre del Impuesto de Reemplazo"/>
+                        </group>
+                    </group>
+
+                    <div class="alert alert-info" role="alert">
+                        <strong>Cómo funciona:</strong><br/>
+                        Cuando un producto con el impuesto "<field name="original_tax_name" readonly="1"/>" 
+                        se agregue a un pedido/factura de <field name="tax_type" readonly="1"/> usando este diario, 
+                        el impuesto será automáticamente reemplazado por 
+                        "<field name="replacement_tax_name" readonly="1"/>".
+                    </div>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Tax Mapping List View -->
+    <record id="view_account_journal_tax_mapping_tree" model="ir.ui.view">
+        <field name="name">account.journal.tax.mapping.tree</field>
+        <field name="model">account.journal.tax.mapping</field>
+        <field name="arch" type="xml">
+            <list string="Mapeos de Impuestos" editable="bottom">
+                <field name="company_id" invisible="1"/>
+                <field name="journal_id" options="{'no_create': True, 'no_open': True}"/>
+                <field name="tax_type"/>
+                <field name="original_tax_id" options="{'no_create': True}" 
+                       domain="[('type_tax_use', '=', tax_type), '|', ('company_id', '=', company_id), ('company_id', 'parent_of', company_id)]"/>
+                <field name="replacement_tax_id" options="{'no_create': True}"
+                       domain="[('type_tax_use', '=', tax_type), '|', ('company_id', '=', company_id), ('company_id', 'parent_of', company_id)]"/>
+                <field name="active" widget="boolean_toggle"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Tax Mapping Search View -->
+    <record id="view_account_journal_tax_mapping_search" model="ir.ui.view">
+        <field name="name">account.journal.tax.mapping.search</field>
+        <field name="model">account.journal.tax.mapping</field>
+        <field name="arch" type="xml">
+            <search string="Mapeos de Impuestos">
+                <field name="journal_id"/>
+                <field name="original_tax_id"/>
+                <field name="replacement_tax_id"/>
+                <filter name="active" string="Activo" domain="[('active', '=', True)]"/>
+                <filter name="inactive" string="Inactivo" domain="[('active', '=', False)]"/>
+                <separator/>
+                <filter name="sales" string="Ventas" domain="[('tax_type', '=', 'sale')]"/>
+                <filter name="purchases" string="Compras" domain="[('tax_type', '=', 'purchase')]"/>
+                <separator/>
+                <group>
+                    <filter string="Diario" name="group_journal" domain="[]" context="{'group_by': 'journal_id'}"/>
+                    <filter string="Tipo de Impuesto" name="group_tax_type" domain="[]" context="{'group_by': 'tax_type'}"/>
+                    <filter string="Impuesto Original" name="group_original_tax" domain="[]" context="{'group_by': 'original_tax_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <!-- Tax Mapping Action -->
+    <record id="action_account_journal_tax_mapping" model="ir.actions.act_window">
+        <field name="name">Mapeos de Impuestos</field>
+        <field name="res_model">account.journal.tax.mapping</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[]</field>
+        <field name="context">{'search_default_active': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                ¡Crea tu primer mapeo de impuestos!
+            </p>
+            <p>
+                Los mapeos de impuestos te permiten reemplazar automáticamente impuestos específicos al usar un diario.
+                Por ejemplo, puedes mapear "IVA 21%" a "IVA 21% Exportación" cuando uses un diario de exportación.
+            </p>
+        </field>
+    </record>
+
+</odoo>
