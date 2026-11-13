@@ -66,7 +66,7 @@
     "website": "",
     "license": "AGPL-3",
     "category": "Accounting/Accounting",
-    "version": "19.0.2.0.1",
+    "version": "19.0.2.0.2",
     "development_status": "Beta",
     "application": False,
     "installable": True,

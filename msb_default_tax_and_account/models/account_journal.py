@@ -117,5 +117,56 @@ class AccountJournal(models.Model):
         return bool(self.tax_mapping_ids.filtered(
             lambda m: m.tax_type == tax_type and m.active
         ))
-    
+
+    @api.model
+    def _msb_resolve_line_taxes(self, journal, product, current_taxes, fiscal_position, company, tax_type='purchase'):
+        """Taxes for a product line after the journal changes.
+
+        Starts from the product taxes (supplier taxes for purchases), filtered
+        by company, then applies this journal's mappings and the fiscal
+        position. That is the historical ``_recompute_line_taxes`` pipeline.
+
+        Mappings are also applied to the taxes already on the line. When that
+        changes the set, the mapped line taxes win, so a reverse map
+        (IVA 10,5% X → IVA 10,5%) works even if the product tax is a different
+        rate. When the line taxes are already the replacement side of this
+        journal's mappings, they are kept, so the same resolution can run
+        again (onchange, then ``write``) without falling back to the product
+        tax and undoing the reverse map.
+
+        A journal with no mappings, or whose mappings do not mention the tax
+        currently on the line, falls back to the product taxes. A leftover
+        X tax is then removed when the line moves to an FE journal.
+        """
+        tax_model = self.env['account.tax']
+        if product:
+            source = product.supplier_taxes_id if tax_type == 'purchase' else product.taxes_id
+            product_taxes = source._filter_taxes_by_company(company)
+        else:
+            product_taxes = tax_model.browse()
+        current_taxes = current_taxes or tax_model.browse()
+
+        has_maps = bool(journal) and journal.has_tax_mappings(tax_type)
+        if not has_maps:
+            taxes = product_taxes
+        else:
+            from_product = journal.map_taxes(product_taxes, tax_type) if product_taxes else tax_model.browse()
+            if not current_taxes:
+                taxes = from_product
+            else:
+                mapped_current = journal.map_taxes(current_taxes, tax_type)
+                replacement_ids = set(journal.tax_mapping_ids.filtered(
+                    lambda mapping: mapping.tax_type == tax_type and mapping.active
+                ).mapped('replacement_tax_id').ids)
+                if set(mapped_current.ids) != set(current_taxes.ids):
+                    taxes = mapped_current
+                elif set(current_taxes.ids) <= replacement_ids:
+                    taxes = current_taxes
+                else:
+                    taxes = from_product
+
+        if fiscal_position and taxes:
+            taxes = fiscal_position.map_tax(taxes)
+        return taxes
+
     # Legacy default tax fields fully removed; tax mapping model replaces them.
