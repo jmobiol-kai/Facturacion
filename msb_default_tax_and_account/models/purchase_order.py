@@ -62,25 +62,86 @@ class PurchaseOrder(models.Model):
             
         return values
 
-    def _recompute_line_taxes(self):
-        """Core logic to recompute all purchase order line taxes using journal mapping + fiscal position.
-        Can be called from onchange (in-memory records) or from action methods (saved records).
+    def write(self, vals):
+        # onchange updates the form, but a saved journal change (the user
+        # confirms the PO, then switches Diario de Compras) only reaches
+        # write(). Recompute here so the new mappings are stored.
+        if self.env.context.get('msb_skip_journal_tax_sync') or 'journal_id' not in vals:
+            return super().write(vals)
+        previous = {order.id: order.journal_id.id for order in self}
+        res = super().write(vals)
+        changed = self.filtered(lambda order: previous.get(order.id) != order.journal_id.id)
+        if changed:
+            changed._msb_apply_purchase_journal_change()
+        return res
+
+    def _msb_apply_purchase_journal_change(self):
+        """Remap PO lines and draft vendor bills after ``journal_id`` changed.
+
+        Posted and cancelled bills are left alone. The bill journal is updated
+        only when the PO journal is a purchase journal of the same company.
+        ``msb_skip_journal_tax_sync`` stops the line writes from re-entering
+        this hook.
         """
+        self.with_context(msb_skip_journal_tax_sync=True)._recompute_line_taxes()
         for order in self:
             journal = order.journal_id
-            fpos = order.fiscal_position_id
-            company = order.company_id
+            if not (
+                journal
+                and journal.type == 'purchase'
+                and journal.company_id == order.company_id
+            ):
+                continue
+            drafts = order.invoice_ids.filtered(
+                lambda move: move.state == 'draft'
+                and move.move_type in ('in_invoice', 'in_refund')
+                and move.company_id == order.company_id
+            )
+            if not drafts:
+                continue
+            # Changing the bill journal remaps every product line once.
+            # Bills already on this journal only refresh lines linked to the PO,
+            # which may still carry the previous journal's tax.
+            to_retarget = drafts.filtered(lambda move: move.journal_id != journal)
+            if to_retarget:
+                to_retarget.write({'journal_id': journal.id})
+            already = drafts - to_retarget
+            if already:
+                already._msb_remap_draft_vendor_bill_taxes(
+                    purchase_lines_only=True, purchase_order=order,
+                )
+        flagged = self.filtered('tax_recompute_needed')
+        if flagged:
+            flagged.with_context(msb_skip_journal_tax_sync=True).write({
+                'tax_recompute_needed': False,
+            })
 
-            for line in order.order_line.filtered(lambda l: not l.display_type):
-                taxes = line.product_id and line.product_id.supplier_taxes_id._filter_taxes_by_company(company) or self.env['account.tax']
-                if journal and journal.has_tax_mappings('purchase') and taxes:
-                    taxes = journal.map_taxes(taxes, 'purchase')
-                mapped = fpos.map_tax(taxes) if (fpos and taxes) else taxes
-                line.tax_ids = mapped
+    def _recompute_line_taxes(self):
+        """Recompute purchase order line taxes from the product and the journal.
+
+        Section, note and down payment lines are left untouched. Safe to call
+        from onchange (in-memory records) and from ``write``.
+        """
+        # Line tax writes must not re-enter the journal write hook.
+        self = self.with_context(msb_skip_journal_tax_sync=True)
+        resolver = self.env['account.journal']._msb_resolve_line_taxes
+        for order in self:
+            journal = order.journal_id
+            fiscal_position = order.fiscal_position_id
+            company = order.company_id
+            for line in order.order_line:
+                if line.display_type or line.is_downpayment:
+                    continue
+                taxes = resolver(
+                    journal, line.product_id, line.tax_ids,
+                    fiscal_position, company, 'purchase',
+                )
+                if set(line.tax_ids.ids) != set(taxes.ids):
+                    line.tax_ids = taxes
 
     @api.onchange('journal_id')
     def _onchange_journal(self):
-        """Automatically recompute taxes when journal changes."""
+        """Recompute taxes in the form. ``write`` persists the same result and updates draft bills."""
         for order in self:
             if order.order_line:
                 order._recompute_line_taxes()

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from odoo import api, fields, models, _
+from odoo import api, fields, models, Command, _
 
 
 class AccountMoveLine(models.Model):
@@ -98,28 +98,95 @@ class AccountMove(models.Model):
         help='Se activa cuando cambia el diario; muestra solicitud para recalcular impuestos (sobrescribir todo).'
     )
 
-    def _recompute_line_taxes(self):
-        """Core logic to recompute all invoice line taxes using journal mapping + fiscal position.
-        Can be called from onchange (in-memory records) or from action methods (saved records).
+    def write(self, vals):
+        # A draft vendor bill whose journal changes (from the bill itself or
+        # from the linked PO) must remap line taxes. Customer invoices keep
+        # the onchange / _get_computed_taxes path.
+        if self.env.context.get('msb_skip_journal_tax_sync') or 'journal_id' not in vals:
+            return super().write(vals)
+        previous = {move.id: move.journal_id.id for move in self}
+        res = super().write(vals)
+        changed = self.filtered(
+            lambda move: move.state == 'draft'
+            and move.move_type in ('in_invoice', 'in_refund')
+            and previous.get(move.id) != move.journal_id.id
+        )
+        if changed:
+            changed._msb_remap_draft_vendor_bill_taxes()
+        return res
+
+    def _msb_remap_draft_vendor_bill_taxes(self, purchase_lines_only=False, purchase_order=None):
+        """Remap draft vendor-bill product lines and rebuild tax totals.
+
+        Posted and cancelled moves are ignored. Down payment lines are left
+        as the user entered them. ``purchase_lines_only`` limits the update to
+        lines linked to ``purchase_order`` (or to any PO line).
         """
+        drafts = self.filtered(
+            lambda move: move.state == 'draft' and move.move_type in ('in_invoice', 'in_refund')
+        )
+        resolver = self.env['account.journal']._msb_resolve_line_taxes
+        for move in drafts:
+            lines = move.invoice_line_ids.filtered(
+                lambda line: line.display_type == 'product' and not line.is_downpayment
+            )
+            if purchase_lines_only:
+                lines = lines.filtered('purchase_line_id')
+                if purchase_order:
+                    lines = lines.filtered(lambda line: line.purchase_line_id.order_id == purchase_order)
+            commands = []
+            for line in lines:
+                taxes = resolver(
+                    move.journal_id, line.product_id, line.tax_ids,
+                    move.fiscal_position_id, move.company_id, 'purchase',
+                )
+                if set(taxes.ids) != set(line.tax_ids.ids):
+                    commands.append(Command.update(line.id, {
+                        'tax_ids': [Command.set(taxes.ids)],
+                    }))
+            if commands:
+                # A second write (no journal_id) runs the dynamic tax-line sync
+                # so amount_tax follows the new taxes. The context stops that
+                # write from remapping again.
+                move.with_context(msb_skip_journal_tax_sync=True).write({
+                    'invoice_line_ids': commands,
+                })
+
+    def _msb_assign_vendor_bill_taxes(self):
+        """In-memory remap used by onchange and the manual recompute action."""
+        resolver = self.env['account.journal']._msb_resolve_line_taxes
         for move in self:
-            for line in move.invoice_line_ids.filtered(lambda l: l.display_type == 'product'):
-                # Route through account.move.line._get_computed_taxes() instead of
-                # rebuilding tax_ids by hand. That method is the single source of truth:
-                #   - core account applies product/supplier taxes + fiscal_position_id.map_tax()
-                #   - our AccountMoveLine._get_computed_taxes() override applies the journal
-                #     tax mappings on top (journal.map_taxes)
-                #   - on AR localization, l10n_ar_tax's override appends the fiscal-position
-                #     perceptions for sale documents.
-                # Rebuilding by hand here bypassed that last step and STRIPPED perceptions.
-                # Using the computed-taxes pipeline preserves the journal VAT remap AND the
-                # perceptions, and stays CE-safe (no l10n_ar-only API is called here; the
-                # perception append happens only if that localization layer is installed).
+            for line in move.invoice_line_ids.filtered(
+                lambda line: line.display_type == 'product' and not line.is_downpayment
+            ):
+                taxes = resolver(
+                    move.journal_id, line.product_id, line.tax_ids,
+                    move.fiscal_position_id, move.company_id, 'purchase',
+                )
+                if set(line.tax_ids.ids) != set(taxes.ids):
+                    line.tax_ids = taxes
+
+    def _recompute_line_taxes(self):
+        """Recompute invoice line taxes from the journal.
+
+        Vendor bills use the purchase resolver (product supplier taxes, journal
+        mappings including reverse maps, fiscal position). With no mappings the
+        line falls back to the product taxes, so a leftover X tax is removed.
+
+        Customer invoices stay on ``_get_computed_taxes``. That pipeline applies
+        the product tax, the fiscal position and the journal map, and keeps
+        localization extras (AR perceptions) that a hand-built tax set would drop.
+        """
+        purchase_moves = self.filtered(lambda move: move.move_type in ('in_invoice', 'in_refund'))
+        if purchase_moves:
+            purchase_moves._msb_assign_vendor_bill_taxes()
+        for move in self - purchase_moves:
+            for line in move.invoice_line_ids.filtered(lambda line: line.display_type == 'product'):
                 line.tax_ids = line._get_computed_taxes()
 
     @api.onchange('journal_id')
     def _onchange_journal_recompute_flag(self):
-        """Automatically recompute taxes when journal changes."""
+        """Recompute taxes in the form. A saved journal change also runs in ``write``."""
         for move in self:
             if move.invoice_line_ids:
                 move._recompute_line_taxes()
