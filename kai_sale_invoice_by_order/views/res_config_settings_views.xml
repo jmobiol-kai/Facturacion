@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.kai.sale.invoice.by.order</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="sale.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <setting id="sales_settings_invoicing_policy" position="after">
+                <setting id="invoice_by_sale_order_setting"
+                         string="Una línea de factura por pedido"
+                         help="Al crear una factura desde uno o varios pedidos de venta, se agrupa en una sola línea por pedido. Si un pedido combina alícuotas distintas, se genera una línea por pedido e impuesto. Los pedidos quedan marcados como facturados.">
+                    <field name="invoice_by_sale_order"/>
+                </setting>
+            </setting>
+        </field>
+    </record>
+</odoo>
