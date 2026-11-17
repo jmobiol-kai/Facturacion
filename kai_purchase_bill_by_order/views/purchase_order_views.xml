@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- El botón nativo «Crear facturas» de la lista pasa por el asistente. -->
+    <record id="purchase_order_view_tree_kai_bill_wizard" model="ir.ui.view">
+        <field name="name">purchase.order.view.list.kai.bill.by.order</field>
+        <field name="model">purchase.order</field>
+        <field name="inherit_id" ref="purchase.purchase_order_view_tree"/>
+        <field name="arch" type="xml">
+            <xpath expr="//button[@name='action_create_invoice']" position="attributes">
+                <attribute name="name">%(kai_purchase_bill_by_order.action_kai_purchase_bill_wizard)d</attribute>
+                <attribute name="type">action</attribute>
+                <attribute name="string">Crear facturas</attribute>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="purchase_order_form_kai_bill_wizard" model="ir.ui.view">
+        <field name="name">purchase.order.form.kai.bill.by.order</field>
+        <field name="model">purchase.order</field>
+        <field name="inherit_id" ref="purchase.purchase_order_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header/button[@name='button_cancel']" position="before">
+                <field name="invoice_status" invisible="1"/>
+                <button name="%(kai_purchase_bill_by_order.action_kai_purchase_bill_wizard)d"
+                        type="action" string="Crear factura"
+                        invisible="state != 'purchase' or invoice_status != 'to invoice'"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kai_purchase_bill_wizard_form" model="ir.ui.view">
+        <field name="name">kai.purchase.bill.wizard.form</field>
+        <field name="model">kai.purchase.bill.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Crear facturas de proveedor">
+                <group>
+                    <field name="purchase_order_ids" widget="many2many_tags" readonly="1"/>
+                    <field name="invoice_line_mode" widget="radio"/>
+                    <field name="consolidate_by_vendor"/>
+                </group>
+                <footer>
+                    <button name="action_create_bills" type="object" string="Crear facturas"
+                            class="btn-primary" data-hotkey="q"/>
+                    <button string="Cancelar" class="btn-secondary" special="cancel" data-hotkey="x"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_kai_purchase_bill_wizard" model="ir.actions.act_window">
+        <field name="name">Crear facturas de proveedor</field>
+        <field name="res_model">kai.purchase.bill.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="binding_model_id" ref="purchase.model_purchase_order"/>
+        <field name="binding_view_types">list,form</field>
+    </record>
+</odoo>

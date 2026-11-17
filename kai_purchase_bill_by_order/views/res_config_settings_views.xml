@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.kai.purchase.bill.by.order</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="purchase.res_config_settings_view_form_purchase"/>
+        <field name="arch" type="xml">
+            <setting id="three_way_matching" position="after">
+                <setting id="bill_by_purchase_order_setting"
+                         string="Una línea de factura por orden de compra"
+                         help="Al crear una factura de proveedor desde una o varias órdenes de compra, se agrupa en una sola línea por orden. Si una orden combina alícuotas distintas, se genera una línea por orden e impuesto. Las órdenes quedan marcadas como facturadas.">
+                    <field name="bill_by_purchase_order"/>
+                </setting>
+            </setting>
+        </field>
+    </record>
+</odoo>
