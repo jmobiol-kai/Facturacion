@@ -16,3 +16,8 @@ class ResConfigSettings(models.TransientModel):
         readonly=False,
         domain=ACCOUNT_DOMAIN,
     )
+    kai_bridge_journal_id = fields.Many2one(
+        related="company_id.kai_bridge_journal_id",
+        readonly=False,
+        domain="[('type', '=', 'general'), ('company_id', '=', company_id)]",
+    )

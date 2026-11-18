@@ -141,3 +141,20 @@ msgstr "El pago %(payment)s tiene retenciones. La regularización no las reparte
 #: code:addons/kai_payment_multi_branch/models/account_payment.py:0
 msgid "El pago %(payment)s está en moneda extranjera. La regularización no genera la diferencia de cambio."
 msgstr "El pago %(payment)s está en moneda extranjera. La regularización no genera la diferencia de cambio."
+
+#. module: kai_payment_multi_branch
+#: model:ir.model.fields,field_description:kai_payment_multi_branch.field_res_company__kai_bridge_journal_id
+msgid "Diario de asientos puente"
+msgstr "Diario de asientos puente"
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid ""
+"%(company)s no tiene el diario de operaciones misceláneas para el asiento "
+"puente. Configuralo en Ajustes de contabilidad o en la ficha de la compañía. "
+"No se usa el diario de punto de venta ni otro diario general."
+msgstr ""
+"%(company)s no tiene el diario de operaciones misceláneas para el asiento "
+"puente. Configuralo en Ajustes de contabilidad o en la ficha de la compañía. "
+"No se usa el diario de punto de venta ni otro diario general."

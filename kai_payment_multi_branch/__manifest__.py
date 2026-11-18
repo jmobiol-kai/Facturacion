@@ -18,7 +18,7 @@ Los pagos ya publicados sin ese puente se corrigen con la acción
 
 Depende de account_payment_pro. No envía correos ni trámites de AFIP.
 """,
-    "version": "19.0.1.1.0",
+    "version": "19.0.1.1.1",
     "category": "Accounting/Accounting",
     "author": "Kaizendo",
     "license": "LGPL-3",

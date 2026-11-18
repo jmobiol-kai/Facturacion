@@ -19,6 +19,12 @@
                              help="La usa esta compañía en el asiento puente cuando otra sucursal de la entidad legal le cancela deuda.">
                         <field name="kai_central_current_account_id"/>
                     </setting>
+                    <setting id="kai_bridge_journal_setting"
+                             string="Diario de asientos puente"
+                             company_dependent="1"
+                             help="Diario de la reclasificación y de los asientos puente. Si queda vacío, se usa el de operaciones misceláneas (MISC o MISCE), no el de punto de venta.">
+                        <field name="kai_bridge_journal_id"/>
+                    </setting>
                 </block>
             </xpath>
         </field>

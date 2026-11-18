@@ -450,3 +450,61 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         self.assertFalse(own_payment.kai_bridge_move_ids)
         self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 0.0, places=2)
         self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+
+    def test_bridge_journal_uses_miscellaneous_not_point_of_sale(self):
+        company = self.yesterday
+        self.env["account.journal"].create({
+            "name": "Punto de venta",
+            "code": "POSS",
+            "type": "general",
+            "company_id": company.id,
+            "sequence": 1,
+        })
+        misce = self.env["account.journal"].create({
+            "name": "Operaciones misceláneas",
+            "code": "MISCE",
+            "type": "general",
+            "company_id": company.id,
+            "sequence": 50,
+        })
+        chart = self.env["account.payment"]._kai_default_misc_journal(company)
+        if chart and chart != misce:
+            chart.active = False
+        self.assertEqual(self.env["account.payment"]._kai_default_misc_journal(company), misce)
+
+        bill = self._invoice(company, "in_invoice", self.vendor, 40)
+        payment = self._payment("supplier", self.vendor, self._debt_lines(bill))
+        payment.action_post()
+        self.assertEqual(payment.kai_bridge_move_ids.journal_id, misce)
+
+        custom = self.env["account.journal"].create({
+            "name": "Puentes sucursal",
+            "code": "PUEN",
+            "type": "general",
+            "company_id": company.id,
+        })
+        company.kai_bridge_journal_id = custom
+        other = self._invoice(company, "in_invoice", self.vendor, 15)
+        second = self._payment("supplier", self.vendor, self._debt_lines(other))
+        second.action_post()
+        self.assertEqual(second.kai_bridge_move_ids.journal_id, custom)
+
+        self.fisa.kai_bridge_journal_id = False
+        for journal in self.env["account.journal"].search([
+            ("company_id", "=", self.fisa.id),
+            ("type", "=", "general"),
+        ]):
+            if not self.env["account.payment"]._kai_journal_is_reserved(journal):
+                journal.active = False
+        self.env["account.journal"].create({
+            "name": "Punto de venta",
+            "code": "POSS",
+            "type": "general",
+            "company_id": self.fisa.id,
+            "sequence": 1,
+        })
+        fisa_bill = self._invoice(self.fisa, "in_invoice", self.vendor, 10)
+        blocked = self._payment("supplier", self.vendor, self._debt_lines(fisa_bill))
+        with self.assertRaises(UserError) as error:
+            blocked.action_post()
+        self.assertIn("misceláneas", str(error.exception))

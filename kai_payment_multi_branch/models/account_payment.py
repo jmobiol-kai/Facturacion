@@ -77,15 +77,105 @@ class AccountPayment(models.Model):
             return True
         return False
 
-    def _kai_bridge_journal(self, company):
-        journal = self.env["account.journal"].search(
-            [("company_id", "=", company.id), ("type", "=", "general")],
-            limit=1,
+    def _kai_misc_journal_codes(self):
+        codes = {"MISC", "MISCE", "VARIOS"}
+        translated = (self.env._("MISC") or "").strip().upper()
+        if translated:
+            codes.add(translated)
+        return codes
+
+    def _kai_misc_journal_names(self):
+        names = {"Miscellaneous Operations", "Operaciones misceláneas", "Operaciones varias"}
+        translated = (self.env._("Miscellaneous Operations") or "").strip()
+        if translated:
+            names.add(translated)
+        return names
+
+    def _kai_journal_is_reserved(self, journal):
+        """Punto de venta, diferencia de cambio y otros usos que no son el diario misceláneo."""
+        code = (journal.code or "").upper()
+        misc_codes = self._kai_misc_journal_codes()
+        if code in {"POSS", "POS"} or (journal.name or "").strip().lower() in {"point of sale", "punto de venta"}:
+            return True
+        if code in {"EXCH", "CABA"} and code not in misc_codes:
+            return True
+        company = journal.company_id
+        reserved = company.currency_exchange_journal_id | company.tax_cash_basis_journal_id
+        if journal in reserved and code not in misc_codes:
+            return True
+        if "pos.config" in self.env and self.env["pos.config"].sudo().search_count(
+            [("journal_id", "=", journal.id)], limit=1
+        ):
+            return True
+        if "pos.payment.method" in self.env and self.env["pos.payment.method"].sudo().search_count(
+            [("journal_id", "=", journal.id)], limit=1
+        ):
+            return True
+        return False
+
+    def _kai_default_misc_journal(self, company):
+        """El diario de operaciones misceláneas del plan, no el primer diario general."""
+        journal_model = self.env["account.journal"]
+        xml_journals = journal_model.browse()
+        for xmlid in (f"account.{company.id}_general", f"account.{company.root_id.id}_general"):
+            found = self.env.ref(xmlid, raise_if_not_found=False)
+            if (
+                found
+                and found._name == "account.journal"
+                and found.company_id == company
+                and found.type == "general"
+                and found.active
+            ):
+                xml_journals |= found
+        codes = self._kai_misc_journal_codes()
+        by_code = journal_model.search(
+            [
+                ("company_id", "=", company.id),
+                ("type", "=", "general"),
+                ("code", "in", list(codes)),
+            ]
         )
+        by_name = journal_model.search(
+            [
+                ("company_id", "=", company.id),
+                ("type", "=", "general"),
+                ("name", "in", list(self._kai_misc_journal_names())),
+            ]
+        )
+        candidates = (xml_journals | by_code | by_name).filtered(lambda journal: not self._kai_journal_is_reserved(journal))
+        if not candidates:
+            return journal_model
+
+        def rank(journal):
+            code = (journal.code or "").upper()
+            return (
+                0 if journal in xml_journals else 1,
+                0 if code in codes else 1,
+                journal.sequence,
+                journal.id,
+            )
+
+        return candidates.sorted(key=rank)[:1]
+
+    def _kai_bridge_journal(self, company):
+        configured = company.kai_bridge_journal_id
+        if configured:
+            if configured.company_id != company or configured.type != "general" or not configured.active:
+                raise UserError(
+                    _(
+                        "El diario de asientos puente de %(company)s tiene que ser un diario "
+                        "general activo de esa compañía.",
+                        company=company.display_name,
+                    )
+                )
+            return configured
+        journal = self._kai_default_misc_journal(company)
         if not journal:
             raise UserError(
                 _(
-                    "%(company)s no tiene un diario de operaciones varias para el asiento puente.",
+                    "%(company)s no tiene el diario de operaciones misceláneas para el asiento "
+                    "puente. Configuralo en Ajustes de contabilidad o en la ficha de la compañía. "
+                    "No se usa el diario de punto de venta ni otro diario general.",
                     company=company.display_name,
                 )
             )

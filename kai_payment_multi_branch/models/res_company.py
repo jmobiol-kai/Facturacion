@@ -37,3 +37,12 @@ class ResCompany(models.Model):
         "sucursal de la misma entidad legal le cancela deuda. En cada "
         "sucursal es la cuenta corriente con la casa central.",
     )
+    kai_bridge_journal_id = fields.Many2one(
+        "account.journal",
+        string="Diario de asientos puente",
+        check_company=True,
+        domain="[('type', '=', 'general')]",
+        help="Diario de los asientos puente y de la reclasificación a la cuenta "
+        "corriente. Si queda vacío, se usa el diario de operaciones misceláneas "
+        "(MISC o MISCE), no el de punto de venta ni otros diarios generales.",
+    )

@@ -10,6 +10,7 @@
                     <group>
                         <field name="kai_branch_current_account_id"/>
                         <field name="kai_central_current_account_id"/>
+                        <field name="kai_bridge_journal_id"/>
                     </group>
                 </page>
             </xpath>
