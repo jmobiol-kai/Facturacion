@@ -1,7 +1,7 @@
 {
     "name": "Factura: una línea por pedido de venta",
-    "summary": "Al facturar uno o varios pedidos de venta, agrupa las líneas en una sola por pedido (y por alícuota, si un pedido combina impuestos distintos).",
-    "version": "19.0.1.0.2",
+    "summary": "Al facturar pedidos de venta, permite una línea por producto, un renglón por pedido o el detalle sin consolidar.",
+    "version": "19.0.1.1.0",
     "category": "Sales/Sales",
     "author": "Mariano Boisselier",
     "license": "LGPL-3",

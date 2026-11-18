@@ -1,3 +1,4 @@
+from odoo import Command, fields
 from odoo.addons.sale.tests.common import TestSaleCommon
 from odoo.tests import tagged
 from odoo.tools.misc import format_date
@@ -18,16 +19,34 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
 
     def _make_order(self, partner, lines):
         order = self.env["sale.order"].create({"partner_id": partner.id})
-        for product, qty, price, taxes in lines:
+        for spec in lines:
+            product, qty, price, taxes = spec[:4]
+            extra = spec[4] if len(spec) > 4 else {}
             self.env["sale.order.line"].create({
                 "order_id": order.id,
                 "product_id": product.id,
                 "product_uom_qty": qty,
                 "price_unit": price,
                 "tax_ids": [(6, 0, taxes.ids)],
+                **extra,
             })
         order.action_confirm()
         return order
+
+    def _product_lines(self, moves):
+        return moves.invoice_line_ids.filtered(lambda line: line.display_type == "product")
+
+    def _post(self, moves):
+        """Publica sin documentos locales ni web service de AFIP."""
+        journals = moves.journal_id
+        if "l10n_latam_use_documents" in journals._fields:
+            journals.write({"l10n_latam_use_documents": False})
+        if "l10n_ar_afip_ws" in journals._fields:
+            journals.write({"l10n_ar_afip_ws": False})
+        for move in moves:
+            if move.is_invoice(include_receipts=True) and not move.invoice_date:
+                move.invoice_date = fields.Date.context_today(move)
+        return moves.action_post()
 
     def test_consolidated_invoice_one_line_per_order(self):
         tax = self.tax_sale_a
@@ -131,6 +150,10 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         self.env.company.invoice_by_sale_order = False
         wizard = self.env["sale.advance.payment.inv"].new({})
         self.assertEqual(wizard.invoice_line_mode, "products")
+        labels = dict(self.env["sale.advance.payment.inv"]._fields["invoice_line_mode"].selection)
+        self.assertEqual(labels["products"], "Una línea por producto")
+        self.assertEqual(labels["by_order"], "Un renglón por orden de venta")
+        self.assertEqual(labels["native"], "Sin consolidar")
 
     def test_wizard_by_order_and_products_with_consolidated_billing(self):
         tax = self.tax_sale_a
@@ -160,6 +183,7 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         lines = invoices.invoice_line_ids.filtered(lambda line: line.display_type == "product")
         self.assertEqual(len(lines), 3)
         self.assertFalse(any(lines.mapped("kai_invoice_by_order")))
+        self.assertFalse(any(lines.mapped("kai_invoice_by_product")))
         self.assertAlmostEqual(invoices.amount_total, first.amount_total + second.amount_total, places=1)
         self.assertEqual(first.invoice_status, "invoiced")
         invoices.unlink()
@@ -187,3 +211,514 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
             self.assertTrue(lines.kai_invoice_by_order)
             self.assertAlmostEqual(lines.price_total, order.amount_total, places=1)
             self.assertEqual(order.invoice_status, "invoiced")
+
+    def _medialuna(self, **extra):
+        vals = {
+            "name": "Medialuna dulce",
+            "type": "consu",
+            "invoice_policy": "order",
+            "list_price": 100.0,
+            "sale_ok": True,
+            "default_code": "MED-01",
+        }
+        vals.update(extra)
+        return self.env["product.product"].create(vals)
+
+    def _sale_product_lines(self, orders):
+        return orders.order_line.filtered(lambda line: not line.display_type)
+
+    def test_products_mode_sums_same_product_across_orders(self):
+        """Varias OV del mismo cliente: una sola línea de medialunas con la cantidad sumada."""
+        tax = self.tax_sale_a
+        product = self._medialuna()
+        first = self._make_order(self.partner_a, [
+            (product, 2, 100.0, tax),
+            (product, 3, 100.0, tax),
+        ])
+        second = self._make_order(self.partner_a, [
+            (product, 4, 100.0, tax),
+        ])
+        for line in self._sale_product_lines(first | second):
+            line.name = "Medialuna dulce\nEntregar en el local"
+        orders = first | second
+        invoice = self._wizard(orders, "products")._create_invoices(orders)
+        self.assertEqual(len(invoice), 1)
+        lines = self._product_lines(invoice)
+        self.assertEqual(len(lines), 1)
+        line = lines
+        self.assertEqual(line.product_id, product)
+        self.assertFalse(line.kai_invoice_by_order)
+        self.assertTrue(line.kai_invoice_by_product)
+        self.assertEqual(line.name, "Medialuna dulce")
+        self.assertNotIn("MED-01", line.name)
+        self.assertNotIn("Entregar", line.name)
+        self.assertAlmostEqual(line.quantity, 9.0)
+        self.assertAlmostEqual(line.price_unit, 100.0)
+        self.assertEqual(line.discount, 0.0)
+        self.assertEqual(set(line.sale_line_ids), set(self._sale_product_lines(orders)))
+        qty_map = line.kai_invoice_by_order_qty_map
+        amount_map = line.kai_invoice_by_order_amount_map
+        for sale_line in self._sale_product_lines(orders):
+            self.assertAlmostEqual(qty_map[str(sale_line.id)], sale_line.product_uom_qty)
+            self.assertAlmostEqual(sale_line.qty_invoiced, sale_line.product_uom_qty)
+            self.assertEqual(sale_line.invoice_status, "invoiced")
+        self.assertAlmostEqual(sum(amount_map.values()), line.price_subtotal, places=2)
+        self.assertAlmostEqual(invoice.amount_total, first.amount_total + second.amount_total, places=2)
+        self.assertEqual(first.invoice_status, "invoiced")
+        self.assertEqual(second.invoice_status, "invoiced")
+
+    def test_products_mode_keeps_separate_lines_when_price_discount_or_tax_differs(self):
+        tax_a = self.tax_sale_a
+        tax_b = self.tax_sale_b
+        product = self._medialuna()
+        order = self._make_order(self.partner_a, [
+            (product, 2, 100.0, tax_a, {"discount": 10.0}),
+            (product, 3, 100.0, tax_a, {"discount": 10.0}),
+            (product, 1, 100.0, tax_a),
+            (product, 1, 80.0, tax_a),
+            (product, 1, 100.0, tax_b),
+        ])
+        invoice = self._wizard(order, "products")._create_invoices(order)
+        lines = self._product_lines(invoice)
+        # 10% se suma; precio, descuento 0 e impuesto distinto quedan aparte.
+        self.assertEqual(len(lines), 4)
+        discounted = lines.filtered(lambda line: line.discount == 10.0)
+        self.assertEqual(len(discounted), 1)
+        self.assertAlmostEqual(discounted.quantity, 5.0)
+        self.assertEqual(discounted.product_id, product)
+        self.assertTrue(discounted.kai_invoice_by_product)
+        self.assertAlmostEqual(invoice.amount_total, order.amount_total, places=2)
+        for sale_line in self._sale_product_lines(order):
+            self.assertAlmostEqual(sale_line.qty_invoiced, sale_line.product_uom_qty)
+
+    def test_products_mode_splits_uom_analytic_and_account(self):
+        tax = self.tax_sale_a
+        product = self._medialuna()
+        unit = product.uom_id
+        dozen = self.env["uom.uom"].create({
+            "name": "Docena kai",
+            "relative_uom_id": unit.id,
+            "relative_factor": 12.0,
+        })
+        plan = self.env["account.analytic.plan"].create({"name": "Sucursales kai"})
+        north = self.env["account.analytic.account"].create({
+            "name": "Sucursal Norte",
+            "plan_id": plan.id,
+            "company_id": self.env.company.id,
+        })
+        south = self.env["account.analytic.account"].create({
+            "name": "Sucursal Sur",
+            "plan_id": plan.id,
+            "company_id": self.env.company.id,
+        })
+        north_dist = {str(north.id): 100.0}
+        south_dist = {str(south.id): 100.0}
+        order = self._make_order(self.partner_a, [
+            (product, 2, 100.0, tax, {"analytic_distribution": north_dist}),
+            (product, 3, 100.0, tax, {"analytic_distribution": north_dist}),
+            (product, 1, 100.0, tax, {"analytic_distribution": south_dist}),
+            (product, 1, 100.0, tax, {"product_uom_id": dozen.id}),
+        ])
+        invoice = self._wizard(order, "products")._create_invoices(order)
+        lines = self._product_lines(invoice)
+        self.assertEqual(len(lines), 3)
+        merged = lines.filtered(
+            lambda line: line.kai_invoice_by_product and line.product_uom_id == unit
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertAlmostEqual(merged.quantity, 5.0)
+        self.assertEqual(merged.product_id, product)
+        self.assertAlmostEqual(merged.analytic_distribution[str(north.id)], 100.0, places=2)
+        self.assertTrue(lines.filtered(lambda line: line.product_uom_id == dozen))
+        south_lines = lines.filtered(
+            lambda line: line.analytic_distribution
+            and str(south.id) in line.analytic_distribution
+            and not line.kai_invoice_by_product
+        )
+        self.assertEqual(len(south_lines), 1)
+
+        other_income = self.env["account.account"].create({
+            "name": "Ingresos alternativos kai",
+            "code": "KAIALT01",
+            "account_type": "income",
+            "company_ids": [Command.set([self.env.company.id])],
+        })
+        # Misma clave salvo la cuenta: no se pueden sumar.
+        same_price = self._make_order(self.partner_a, [
+            (product, 2, 100.0, tax),
+            (product, 4, 100.0, tax),
+        ])
+        draft = self._wizard(same_price, "native")._create_invoices(same_price)
+        native_lines = self._product_lines(draft)
+        self.assertEqual(len(native_lines), 2)
+        native_lines[:1].account_id = other_income
+        draft.with_context(kai_invoice_line_mode="products")._kai_consolidate_invoice_lines_by_sale_order()
+        self.assertEqual(len(self._product_lines(draft)), 2)
+        native_lines = self._product_lines(draft)
+        other = native_lines.filtered(lambda line: line.account_id == other_income)
+        other.account_id = (native_lines - other).account_id
+        draft.with_context(kai_invoice_line_mode="products")._kai_consolidate_invoice_lines_by_sale_order()
+        merged_account = self._product_lines(draft)
+        self.assertEqual(len(merged_account), 1)
+        self.assertAlmostEqual(merged_account.quantity, 6.0)
+        self.assertEqual(merged_account.product_id, product)
+
+    def test_products_mode_with_included_tax_keeps_the_total(self):
+        tax = self.env["account.tax"].create({
+            "name": "IVA 21% incluido kai",
+            "amount": 21.0,
+            "amount_type": "percent",
+            "type_tax_use": "sale",
+            "price_include_override": "tax_included",
+        })
+        product = self._medialuna()
+        first = self._make_order(self.partner_a, [(product, 2, 121.0, tax)])
+        second = self._make_order(self.partner_a, [(product, 3, 121.0, tax)])
+        invoice = self._wizard(first | second, "products")._create_invoices(first | second)
+        line = self._product_lines(invoice)
+        self.assertEqual(len(line), 1)
+        self.assertAlmostEqual(line.quantity, 5.0)
+        self.assertAlmostEqual(line.price_unit, 121.0)
+        self.assertEqual(line.product_id, product)
+        self.assertAlmostEqual(invoice.amount_total, first.amount_total + second.amount_total, places=2)
+        self.assertAlmostEqual(invoice.amount_untaxed, first.amount_untaxed + second.amount_untaxed, places=2)
+
+    def test_sections_and_notes_survive_product_consolidation(self):
+        tax = self.tax_sale_a
+        product = self._medialuna()
+        other = self.company_data["product_order_sales_price"]
+        order = self.env["sale.order"].create({"partner_id": self.partner_a.id})
+        self.env["sale.order.line"].create({
+            "order_id": order.id,
+            "display_type": "line_section",
+            "name": "Desayuno",
+        })
+        self.env["sale.order.line"].create({
+            "order_id": order.id,
+            "display_type": "line_note",
+            "name": "Entregar temprano",
+        })
+        self.env["sale.order.line"].create({
+            "order_id": order.id,
+            "product_id": product.id,
+            "product_uom_qty": 2,
+            "price_unit": 100.0,
+            "tax_ids": [(6, 0, tax.ids)],
+        })
+        self.env["sale.order.line"].create({
+            "order_id": order.id,
+            "product_id": product.id,
+            "product_uom_qty": 3,
+            "price_unit": 100.0,
+            "tax_ids": [(6, 0, tax.ids)],
+        })
+        self.env["sale.order.line"].create({
+            "order_id": order.id,
+            "product_id": other.id,
+            "product_uom_qty": 1,
+            "price_unit": 50.0,
+            "tax_ids": [(6, 0, tax.ids)],
+        })
+        order.action_confirm()
+        invoice = self._wizard(order, "products")._create_invoices(order)
+        self.assertTrue(invoice.invoice_line_ids.filtered(lambda line: line.display_type == "line_section"))
+        self.assertTrue(invoice.invoice_line_ids.filtered(lambda line: line.display_type == "line_note"))
+        products = self._product_lines(invoice)
+        self.assertEqual(len(products), 2)
+        merged = products.filtered(lambda line: line.product_id == product)
+        self.assertEqual(len(merged), 1)
+        self.assertAlmostEqual(merged.quantity, 5.0)
+        self.assertAlmostEqual(invoice.amount_total, order.amount_total, places=2)
+        for sale_line in self._sale_product_lines(order):
+            self.assertAlmostEqual(sale_line.qty_invoiced, sale_line.product_uom_qty)
+
+    def test_each_invoice_consolidates_on_its_own(self):
+        """Odoo arma una factura por cliente. Cada una suma sus propios productos."""
+        tax = self.tax_sale_a
+        product = self._medialuna()
+        partner_a_orders = self._make_order(self.partner_a, [
+            (product, 2, 100.0, tax),
+            (product, 1, 100.0, tax),
+        ]) | self._make_order(self.partner_a, [(product, 4, 100.0, tax)])
+        partner_b_order = self._make_order(self.partner_b, [
+            (product, 5, 100.0, tax),
+            (product, 1, 100.0, tax),
+        ])
+        invoices = self._wizard(
+            partner_a_orders | partner_b_order, "products",
+        )._create_invoices(partner_a_orders | partner_b_order)
+        self.assertEqual(len(invoices), 2)
+        by_partner = {invoice.partner_id: invoice for invoice in invoices}
+        line_a = self._product_lines(by_partner[self.partner_a])
+        line_b = self._product_lines(by_partner[self.partner_b])
+        self.assertEqual(len(line_a), 1)
+        self.assertEqual(len(line_b), 1)
+        self.assertAlmostEqual(line_a.quantity, 7.0)
+        self.assertAlmostEqual(line_b.quantity, 6.0)
+        self.assertEqual(line_a.product_id, product)
+        self.assertEqual(line_b.product_id, product)
+
+    def test_native_mode_and_company_default_do_not_follow_product_consolidation(self):
+        tax = self.tax_sale_a
+        product = self._medialuna()
+        first = self._make_order(self.partner_a, [
+            (product, 2, 100.0, tax),
+            (product, 1, 100.0, tax),
+        ])
+        second = self._make_order(self.partner_a, [(product, 4, 100.0, tax)])
+        orders = first | second
+        self.env.company.invoice_by_sale_order = True
+
+        by_order = orders._create_invoices()
+        by_order_lines = self._product_lines(by_order)
+        self.assertEqual(len(by_order_lines), 2)
+        self.assertTrue(all(by_order_lines.mapped("kai_invoice_by_order")))
+        self.assertFalse(any(by_order_lines.mapped("kai_invoice_by_product")))
+        self.assertFalse(any(by_order_lines.mapped("product_id")))
+        by_order.unlink()
+
+        native = self._wizard(orders, "native")._create_invoices(orders)
+        native_lines = self._product_lines(native)
+        self.assertEqual(len(native_lines), 3)
+        self.assertFalse(any(native_lines.mapped("kai_invoice_by_order")))
+        self.assertFalse(any(native_lines.mapped("kai_invoice_by_product")))
+        self.assertEqual(set(native_lines.mapped("product_id")), {product})
+        native.unlink()
+
+        merged = self._wizard(orders, "products")._create_invoices(orders)
+        merged_lines = self._product_lines(merged)
+        self.assertEqual(len(merged_lines), 1)
+        self.assertTrue(merged_lines.kai_invoice_by_product)
+        self.assertEqual(merged_lines.product_id, product)
+
+    def test_partial_deliveries_invoice_twice_and_keep_qty_invoiced(self):
+        tax = self.tax_sale_a
+        product = self._medialuna(type="service", invoice_policy="delivery")
+        order = self._make_order(self.partner_a, [
+            (product, 10, 100.0, tax),
+            (product, 10, 100.0, tax),
+        ])
+        first_line, second_line = self._sale_product_lines(order).sorted("id")
+        first_line.qty_delivered = 4
+        second_line.qty_delivered = 0
+
+        first_invoice = self._wizard(order, "products")._create_invoices(order)
+        first_products = self._product_lines(first_invoice)
+        self.assertEqual(len(first_products), 1)
+        self.assertAlmostEqual(first_products.quantity, 4.0)
+        self.assertFalse(first_products.kai_invoice_by_product)
+        self.assertEqual(first_products.product_id, product)
+        self._post(first_invoice)
+        self.assertAlmostEqual(first_line.qty_invoiced, 4.0)
+        self.assertAlmostEqual(first_line.qty_invoiced_posted, 4.0)
+        self.assertAlmostEqual(second_line.qty_invoiced, 0.0)
+
+        first_line.qty_delivered = 10
+        second_line.qty_delivered = 10
+        second_invoice = self._wizard(order, "products")._create_invoices(order)
+        second_products = self._product_lines(second_invoice)
+        self.assertEqual(len(second_products), 1)
+        self.assertTrue(second_products.kai_invoice_by_product)
+        self.assertEqual(second_products.product_id, product)
+        self.assertAlmostEqual(second_products.quantity, 16.0)
+        self.assertEqual(second_products.name, "Medialuna dulce")
+        qty_map = second_products.kai_invoice_by_order_qty_map
+        self.assertAlmostEqual(qty_map[str(first_line.id)], 6.0)
+        self.assertAlmostEqual(qty_map[str(second_line.id)], 10.0)
+        self._post(second_invoice)
+
+        self.assertAlmostEqual(first_line.qty_invoiced, 10.0)
+        self.assertAlmostEqual(second_line.qty_invoiced, 10.0)
+        self.assertAlmostEqual(first_line.qty_invoiced_posted, 10.0)
+        self.assertAlmostEqual(second_line.qty_invoiced_posted, 10.0)
+        self.assertAlmostEqual(first_line.untaxed_amount_invoiced, first_line.price_subtotal, places=2)
+        self.assertAlmostEqual(second_line.untaxed_amount_invoiced, second_line.price_subtotal, places=2)
+        self.assertAlmostEqual(first_line.amount_invoiced, first_line.price_total, places=2)
+        self.assertAlmostEqual(second_line.amount_invoiced, second_line.price_total, places=2)
+        self.assertEqual(order.invoice_status, "invoiced")
+
+    def test_credit_note_and_partial_refund_update_sale_quantities(self):
+        tax = self.tax_sale_a
+        product = self._medialuna()
+        orders = self._make_order(self.partner_a, [(product, 2, 100.0, tax)]) | self._make_order(
+            self.partner_a, [(product, 3, 100.0, tax)]
+        )
+        invoice = self._wizard(orders, "products")._create_invoices(orders)
+        product_line = self._product_lines(invoice)
+        self.assertEqual(len(product_line), 1)
+        self.assertAlmostEqual(product_line.quantity, 5.0)
+        self._post(invoice)
+
+        refund = invoice._reverse_moves()
+        refund_line = self._product_lines(refund)
+        self.assertEqual(refund.move_type, "out_refund")
+        self.assertEqual(len(refund_line), 1)
+        self.assertTrue(refund_line.kai_invoice_by_product)
+        self.assertEqual(refund_line.product_id, product)
+        self.assertEqual(set(refund_line.sale_line_ids), set(product_line.sale_line_ids))
+        refund_line.quantity = 2
+        self._post(refund)
+
+        for sale_line in self._sale_product_lines(orders):
+            expected_qty = sale_line.product_uom_qty * 3.0 / 5.0
+            self.assertAlmostEqual(sale_line.qty_invoiced, expected_qty, places=4)
+            self.assertAlmostEqual(sale_line.qty_invoiced_posted, expected_qty, places=4)
+            self.assertAlmostEqual(
+                sale_line.untaxed_amount_invoiced,
+                sale_line.price_subtotal * expected_qty / sale_line.product_uom_qty,
+                places=2,
+            )
+            self.assertAlmostEqual(
+                sale_line.amount_invoiced,
+                sale_line.price_total * expected_qty / sale_line.product_uom_qty,
+                places=2,
+            )
+
+    def test_full_credit_note_clears_invoiced_quantities(self):
+        tax = self.tax_sale_a
+        product = self._medialuna()
+        orders = self._make_order(self.partner_a, [(product, 2, 100.0, tax)]) | self._make_order(
+            self.partner_a, [(product, 3, 100.0, tax)]
+        )
+        invoice = self._wizard(orders, "products")._create_invoices(orders)
+        self._post(invoice)
+        refund = invoice._reverse_moves()
+        self.assertTrue(self._product_lines(refund).kai_invoice_by_product)
+        self._post(refund)
+        for sale_line in self._sale_product_lines(orders):
+            self.assertAlmostEqual(sale_line.qty_invoiced, 0.0)
+            self.assertAlmostEqual(sale_line.qty_invoiced_posted, 0.0)
+            self.assertAlmostEqual(sale_line.untaxed_amount_invoiced, 0.0, places=2)
+            self.assertAlmostEqual(sale_line.amount_invoiced, 0.0, places=2)
+        self.assertEqual(set(orders.mapped("invoice_status")), {"to invoice"})
+
+    def test_partial_return_from_the_sale_order_consolidates_the_credit_note(self):
+        tax = self.tax_sale_a
+        product = self._medialuna(type="service", invoice_policy="delivery")
+        order = self._make_order(self.partner_a, [
+            (product, 10, 100.0, tax),
+            (product, 10, 100.0, tax),
+        ])
+        first_line, second_line = self._sale_product_lines(order).sorted("id")
+        first_line.qty_delivered = 10
+        second_line.qty_delivered = 10
+        invoice = self._wizard(order, "products")._create_invoices(order)
+        self.assertAlmostEqual(self._product_lines(invoice).quantity, 20.0)
+        self._post(invoice)
+
+        first_line.qty_delivered = 7
+        second_line.qty_delivered = 8
+        refund = self._wizard(order, "products")._create_invoices(order)
+        self.assertEqual(refund.move_type, "out_refund")
+        refund_line = self._product_lines(refund)
+        self.assertEqual(len(refund_line), 1)
+        self.assertTrue(refund_line.kai_invoice_by_product)
+        self.assertEqual(refund_line.product_id, product)
+        self.assertAlmostEqual(refund_line.quantity, 5.0)
+        self.assertEqual(set(refund_line.sale_line_ids), {first_line, second_line})
+        self._post(refund)
+        self.assertAlmostEqual(first_line.qty_invoiced, 7.0)
+        self.assertAlmostEqual(second_line.qty_invoiced, 8.0)
+        self.assertAlmostEqual(first_line.qty_invoiced_posted, 7.0)
+        self.assertAlmostEqual(second_line.qty_invoiced_posted, 8.0)
+        self.assertAlmostEqual(
+            first_line.untaxed_amount_invoiced,
+            first_line.price_subtotal * 0.7,
+            places=2,
+        )
+        self.assertAlmostEqual(
+            second_line.untaxed_amount_invoiced,
+            second_line.price_subtotal * 0.8,
+            places=2,
+        )
+
+    def test_consolidated_product_line_posts_fifo_cogs(self):
+        """El product_id se conserva y el COGS FIFO de tiempo real suma el costo de los remitos."""
+        installed = self.env["ir.module.module"].sudo().search_count([
+            ("name", "in", ("stock_account", "sale_stock")),
+            ("state", "=", "installed"),
+        ])
+        if installed < 2:
+            self.skipTest("Hace falta stock_account y sale_stock para el costo de ventas.")
+        company = self.env.company
+        warehouse = self.env["stock.warehouse"].search([("company_id", "=", company.id)], limit=1)
+        if not warehouse:
+            self.skipTest("La compañía de prueba no tiene almacén.")
+        expense = self.company_data["default_account_expense"]
+        income = self.company_data["default_account_revenue"]
+        stock_account = self.env["account.account"].create({
+            "name": "Valuación stock kai",
+            "code": "KAISTKVAL",
+            "account_type": "asset_current",
+            "reconcile": True,
+            "company_ids": [Command.set([company.id])],
+        })
+        category = self.env["product.category"].with_company(company).create({
+            "name": "FIFO tiempo real kai",
+            "property_valuation": "real_time",
+            "property_cost_method": "fifo",
+            "property_stock_valuation_account_id": stock_account.id,
+            "property_account_income_categ_id": income.id,
+            "property_account_expense_categ_id": expense.id,
+        })
+        product = self._medialuna(
+            name="Medialuna dulce",
+            is_storable=True,
+            invoice_policy="delivery",
+            categ_id=category.id,
+            standard_price=8.0,
+            taxes_id=[Command.clear()],
+        )
+        supplier = self.env.ref("stock.stock_location_suppliers")
+
+        def receive(qty, cost):
+            move = self.env["stock.move"].create({
+                "product_id": product.id,
+                "location_id": supplier.id,
+                "location_dest_id": warehouse.lot_stock_id.id,
+                "product_uom": product.uom_id.id,
+                "product_uom_qty": qty,
+                "picking_type_id": warehouse.in_type_id.id,
+                "value_manual": cost * qty,
+                "price_unit": cost,
+            })
+            move._action_confirm()
+            move._action_assign()
+            move.picked = True
+            move._action_done()
+            return move
+
+        receive(2, 8.0)
+        receive(3, 14.0)
+        no_tax = self.env["account.tax"]
+        first = self._make_order(self.partner_a, [(product, 2, 100.0, no_tax)])
+        second = self._make_order(self.partner_a, [(product, 3, 100.0, no_tax)])
+        orders = first | second
+        pickings = orders.picking_ids.filtered(lambda picking: picking.state not in ("done", "cancel"))
+        for picking in pickings:
+            picking.action_assign()
+            for move in picking.move_ids:
+                move.quantity = move.product_uom_qty
+                move.picked = True
+            result = picking.button_validate()
+            if isinstance(result, dict):
+                wizard = self.env[result["res_model"]].with_context(result.get("context") or {}).create({})
+                wizard.process()
+        delivered = orders.picking_ids.move_ids.filtered(lambda move: move.state == "done")
+        self.assertEqual(sum(delivered.mapped("product_uom_qty")), 5)
+        self.assertAlmostEqual(sum(delivered.mapped("value")), 58.0, places=2)
+
+        invoice = self._wizard(orders, "products")._create_invoices(orders)
+        line = self._product_lines(invoice)
+        self.assertEqual(len(line), 1)
+        self.assertEqual(line.product_id, product)
+        self.assertAlmostEqual(line.quantity, 5.0)
+        self.assertEqual(set(line.sale_line_ids), set(self._sale_product_lines(orders)))
+        self._post(invoice)
+        cogs = invoice.line_ids.filtered(lambda move_line: move_line.display_type == "cogs")
+        self.assertTrue(cogs)
+        self.assertEqual(set(cogs.product_id), {product})
+        expense_debit = sum(cogs.filtered(lambda move_line: move_line.account_id == expense).mapped("debit"))
+        stock_credit = sum(cogs.filtered(lambda move_line: move_line.account_id == stock_account).mapped("credit"))
+        self.assertAlmostEqual(expense_debit, 58.0, places=2)
+        self.assertAlmostEqual(stock_credit, 58.0, places=2)
