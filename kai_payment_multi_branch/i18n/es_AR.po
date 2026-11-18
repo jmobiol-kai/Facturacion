@@ -101,3 +101,43 @@ msgid ""
 msgstr ""
 "El pago de varias sucursales solo está soportado en la moneda de la compañía"
 " (%(currency)s). La diferencia de cambio no se reparte entre sucursales."
+
+#. module: kai_payment_multi_branch
+#: model:ir.actions.act_window,name:kai_payment_multi_branch.action_kai_payment_regularize
+msgid "Regularizar pago existente"
+msgstr "Regularizar pago existente"
+
+#. module: kai_payment_multi_branch
+#: model:ir.model.fields,field_description:kai_payment_multi_branch.field_kai_payment_regularize_wizard__date
+msgid "Fecha de los asientos"
+msgstr "Fecha de los asientos"
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid "El pago %(payment)s ya está regularizado."
+msgstr "El pago %(payment)s ya está regularizado."
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid "El pago %(payment)s no concilia deuda de otra sucursal."
+msgstr "El pago %(payment)s no concilia deuda de otra sucursal."
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid "El pago %(payment)s usa cheques. La regularización no los reparte entre sucursales."
+msgstr "El pago %(payment)s usa cheques. La regularización no los reparte entre sucursales."
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid "El pago %(payment)s tiene retenciones. La regularización no las reparte entre sucursales."
+msgstr "El pago %(payment)s tiene retenciones. La regularización no las reparte entre sucursales."
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid "El pago %(payment)s está en moneda extranjera. La regularización no genera la diferencia de cambio."
+msgstr "El pago %(payment)s está en moneda extranjera. La regularización no genera la diferencia de cambio."

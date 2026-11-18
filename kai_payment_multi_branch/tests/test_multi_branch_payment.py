@@ -1,3 +1,6 @@
+from datetime import timedelta
+from unittest.mock import patch
+
 from odoo import Command, fields
 from odoo.addons.account.tests.common import AccountTestInvoicingCommon
 from odoo.exceptions import UserError
@@ -106,6 +109,17 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         })
         payment.to_pay_move_line_ids = [Command.set(lines.ids)]
         return payment
+
+    def _legacy_payment(self, partner_type, partner, lines):
+        payment = self._payment(partner_type, partner, lines)
+        payment.with_context(kai_skip_branch_bridge=True).action_post()
+        return payment
+
+    def _wizard(self, payments):
+        return self.env["kai.payment.regularize.wizard"].with_context(
+            active_model="account.payment",
+            active_ids=payments.ids,
+        ).create({})
 
     def _partner_balance(self, company, partner, account_type):
         lines = self.env["account.move.line"].search([
@@ -296,3 +310,143 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         with self.assertRaises(UserError) as error:
             payment.action_post()
         self.assertIn("moneda", str(error.exception))
+
+    def test_single_branch_payment_clears_the_branch_not_the_central_payable(self):
+        bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        lines = self._debt_lines(bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        payment.action_post()
+
+        self._assert_reconciled(lines)
+        self.assertEqual(payment.kai_bridge_move_ids.company_id, self.yesterday)
+        self.assertFalse(payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        ))
+        cc_lines = payment.move_id.line_ids.filtered(lambda line: line.account_id == self.cc_branches)
+        self.assertEqual(cc_lines.kai_settled_company_id, self.yesterday)
+        self.assertAlmostEqual(cc_lines.balance, 100.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 100.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), -100.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -100.0, places=2)
+
+    def test_regularize_legacy_supplier_matches_a_new_payment(self):
+        bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        lines = self._debt_lines(bill)
+        payment = self._legacy_payment("supplier", self.vendor, lines)
+        self.assertFalse(payment.kai_bridge_move_ids)
+        self.assertTrue(lines.reconciled)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 100.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), -100.0, places=2)
+        liquidity_before = self._liquidity_balance(payment)
+
+        wizard = self._wizard(payment)
+        self.assertTrue(wizard.line_ids.eligible)
+        self.assertEqual(wizard.date, payment.date)
+        entry_date = payment.date + timedelta(days=4)
+        wizard.date = entry_date
+        wizard.action_regularize()
+
+        lines.invalidate_recordset()
+        self._assert_reconciled(lines)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 100.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), -100.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), liquidity_before, places=2)
+        self.assertTrue(payment.kai_bridge_move_ids)
+        self.assertEqual(set(payment.kai_bridge_move_ids.mapped("date")), {entry_date})
+        self.assertEqual(set(payment.kai_bridge_move_ids.company_id), {self.company, self.yesterday})
+        branch_match = (lines.matched_debit_ids | lines.matched_credit_ids)
+        branch_counterparts = (branch_match.debit_move_id | branch_match.credit_move_id) - lines
+        self.assertTrue(branch_counterparts)
+        self.assertTrue(all(line.company_id == self.yesterday for line in branch_counterparts))
+        self.assertTrue(all(line.move_id.kai_origin_payment_id == payment for line in branch_counterparts))
+        payable = payment.move_id.line_ids.filtered(lambda line: line.account_id.account_type == "liability_payable")
+        payable_match = (payable.matched_debit_ids | payable.matched_credit_ids)
+        payable_counterparts = (payable_match.debit_move_id | payable_match.credit_move_id) - payable
+        self.assertTrue(all(line.company_id == self.company for line in payable_counterparts))
+        self.assertTrue(all(line.move_id.kai_origin_payment_id == payment for line in payable_counterparts))
+
+        again = self._wizard(payment)
+        self.assertFalse(again.line_ids.eligible)
+        self.assertIn("regularizado", again.line_ids.reason)
+        with self.assertRaises(UserError):
+            again.action_regularize()
+        self.assertEqual(len(payment.kai_bridge_move_ids), 2)
+
+        payment.action_draft()
+        lines.invalidate_recordset()
+        self.assertFalse(payment.kai_bridge_move_ids)
+        self.assertFalse(lines.reconciled)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), -100.0, places=2)
+
+        payment.action_post()
+        self._assert_reconciled(lines)
+        self.assertEqual(payment.kai_bridge_move_ids.company_id, self.yesterday)
+        self.assertFalse(payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        ))
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 100.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), -100.0, places=2)
+
+    def test_regularize_legacy_customer_receipt(self):
+        invoice = self._invoice(self.yesterday, "out_invoice", self.customer, 80)
+        lines = self._debt_lines(invoice)
+        payment = self._legacy_payment("customer", self.customer, lines)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.customer, "asset_receivable"), -80.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.customer, "asset_receivable"), 80.0, places=2)
+
+        wizard = self._wizard(payment)
+        self.assertEqual(wizard.date, payment.date)
+        wizard.action_regularize()
+
+        self._assert_reconciled(lines)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.customer, "asset_receivable"), 0.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.customer, "asset_receivable"), 0.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), -80.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), 80.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), 80.0, places=2)
+
+    def test_regularize_wizard_previews_and_skips_rejected_payments(self):
+        branch_bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 60)
+        own_bill = self._invoice(self.company, "in_invoice", self.vendor, 25)
+        legacy = self._legacy_payment("supplier", self.vendor, self._debt_lines(branch_bill))
+        own_payment = self._payment("supplier", self.vendor, self._debt_lines(own_bill))
+        own_payment.action_post()
+
+        wizard = self._wizard(legacy | own_payment)
+        self.assertEqual(len(wizard.line_ids), 2)
+        by_payment = {line.payment_id: line for line in wizard.line_ids}
+        self.assertTrue(by_payment[legacy].eligible)
+        self.assertFalse(by_payment[own_payment].eligible)
+        self.assertIn("otra sucursal", by_payment[own_payment].reason)
+        other_vendor = self.env["res.partner"].create({"name": "Proveedor bloqueado"})
+        blocked = self._legacy_payment(
+            "supplier",
+            other_vendor,
+            self._debt_lines(self._invoice(self.fisa, "in_invoice", other_vendor, 15)),
+        )
+        euro = self.env.ref("base.EUR")
+        euro.active = True
+        blocked.currency_id = euro
+        self.assertIn("moneda extranjera", blocked._kai_regularize_block_reason())
+        blocked.currency_id = self.company.currency_id
+        with patch.object(type(blocked), "_kai_has_withholdings", lambda self: True):
+            self.assertIn("retenciones", blocked._kai_regularize_block_reason())
+        method = self.env["account.payment.method"].search([("code", "=", "own_checks")], limit=1)
+        self.assertTrue(method)
+        blocked.payment_method_line_id = self.env["account.payment.method.line"].create({
+            "name": "Cheque propio",
+            "payment_method_id": method.id,
+            "journal_id": blocked.journal_id.id,
+        })
+        self.assertIn("cheques", blocked._kai_regularize_block_reason())
+
+        wizard.action_regularize()
+        self.assertTrue(legacy.kai_bridge_move_ids)
+        self.assertFalse(own_payment.kai_bridge_move_ids)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)

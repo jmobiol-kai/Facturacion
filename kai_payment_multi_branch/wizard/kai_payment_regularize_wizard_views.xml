@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="kai_payment_regularize_wizard_view_form" model="ir.ui.view">
+        <field name="name">kai.payment.regularize.wizard.form</field>
+        <field name="model">kai.payment.regularize.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Regularizar pago existente">
+                <group>
+                    <field name="date"/>
+                    <field name="eligible_count" invisible="1"/>
+                </group>
+                <p>
+                    Se listan los pagos seleccionados. Los que concilian facturas de otra
+                    sucursal de la misma entidad legal, sin asiento puente, se pueden regularizar.
+                    El resto queda afuera, con el motivo.
+                </p>
+                <field name="line_ids" readonly="1">
+                    <list decoration-danger="not eligible" decoration-success="eligible" create="false" edit="false" delete="false">
+                        <field name="eligible"/>
+                        <field name="payment_id"/>
+                        <field name="payment_date"/>
+                        <field name="partner_id"/>
+                        <field name="company_id"/>
+                        <field name="payment_type"/>
+                        <field name="amount"/>
+                        <field name="currency_id" column_invisible="1"/>
+                        <field name="reason"/>
+                    </list>
+                </field>
+                <footer>
+                    <button name="action_regularize" type="object" string="Regularizar" class="btn-primary" invisible="eligible_count == 0"/>
+                    <button string="Cerrar" special="cancel" class="btn-secondary"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_kai_payment_regularize" model="ir.actions.act_window">
+        <field name="name">Regularizar pago existente</field>
+        <field name="res_model">kai.payment.regularize.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="binding_model_id" ref="account.model_account_payment"/>
+        <field name="binding_view_types">list,form</field>
+        <field name="group_ids" eval="[(4, ref('account.group_account_user'))]"/>
+    </record>
+</odoo>
