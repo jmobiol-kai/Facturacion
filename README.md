@@ -9,3 +9,5 @@ Módulos Odoo de facturación (rama `19.0`). Este repositorio es una carpeta de 
 - `kai_sale_invoice_by_order`: Factura un renglón por orden de venta en lugar del detalle de productos (opción en el asistente Crear facturas y ajuste en Ventas).
 
 - `msb_default_tax_and_account`: en el diario de venta o de compra, usa la cuenta por defecto del diario en las líneas de factura y reemplaza impuestos según el mapeo del diario (impuesto original → reemplazo). Depende de `account`, `sale` y `purchase`.
+
+- `kai_payment_multi_branch`: un pago o recibo de una compañía de la entidad legal cancela facturas y notas de crédito o débito de otras sucursales (mismo CUIT). El banco queda en quien paga, cada sucursal cierra su deuda con un asiento puente y las cuentas corrientes intercompañía se netean. Depende de `account_payment_pro`.

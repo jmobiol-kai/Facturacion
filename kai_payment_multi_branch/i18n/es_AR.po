@@ -1,0 +1,103 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* kai_payment_multi_branch
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 19.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-18 00:00+0000\n"
+"PO-Revision-Date: 2026-11-18 00:00+0000\n"
+"Last-Translator: Kaizendo\n"
+"Language-Team: Spanish (Argentina)\n"
+"Language: es_AR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid "All to pay lines must be of the same partner"
+msgstr "Todas las líneas a pagar deben ser del mismo contacto."
+
+#. module: kai_payment_multi_branch
+#: model:ir.model.fields,field_description:kai_payment_multi_branch.field_account_move__kai_origin_payment_id
+msgid "Pago origen"
+msgstr "Pago origen"
+
+#. module: kai_payment_multi_branch
+#: model:ir.model.fields,field_description:kai_payment_multi_branch.field_account_payment__kai_bridge_move_ids
+#: model_terms:ir.ui.view,arch_db:kai_payment_multi_branch.view_account_payment_form
+msgid "Asientos puente"
+msgstr "Asientos puente"
+
+#. module: kai_payment_multi_branch
+#: model:ir.model.fields,field_description:kai_payment_multi_branch.field_res_company__kai_branch_current_account_id
+msgid "Cuenta corriente con sucursales"
+msgstr "Cuenta corriente con sucursales"
+
+#. module: kai_payment_multi_branch
+#: model:ir.model.fields,field_description:kai_payment_multi_branch.field_res_company__kai_central_current_account_id
+msgid "Cuenta corriente con casa central"
+msgstr "Cuenta corriente con casa central"
+
+#. module: kai_payment_multi_branch
+#: model_terms:ir.ui.view,arch_db:kai_payment_multi_branch.view_company_form_kai_payment_multi_branch
+msgid "Pagos multi-sucursal"
+msgstr "Pagos multi-sucursal"
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid "Payment is for partner %s but payment lines are of partner %s"
+msgstr "El pago es para el contacto %s pero las líneas de pago corresponden al contacto %s"
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid "To Pay Lines must be of the same account!"
+msgstr "Líneas a Pagar deben contener la misma cuenta"
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid "You can't create payments for entries belonging to different companies."
+msgstr "No se pueden crear pagos para asientos que pertenezcan a diferentes compañías."
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid ""
+"El pago multi-sucursal tiene que cancelar exactamente la deuda seleccionada "
+"(facturas, notas de crédito y notas de débito). El asiento del pago cancela "
+"%(payment)s y las líneas seleccionadas suman %(debt)s. Los pagos parciales "
+"y los anticipos no están soportados entre sucursales."
+msgstr ""
+"El pago multi-sucursal tiene que cancelar exactamente la deuda seleccionada "
+"(facturas, notas de crédito y notas de débito). El asiento del pago cancela "
+"%(payment)s y las líneas seleccionadas suman %(debt)s. Los pagos parciales "
+"y los anticipos no están soportados entre sucursales."
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid ""
+"Falta la cuenta corriente con sucursales en %(company)s. Configurala en "
+"Ajustes de contabilidad o en la ficha de la compañía antes de confirmar el "
+"pago."
+msgstr ""
+"Falta la cuenta corriente con sucursales en %(company)s. Configurala en "
+"Ajustes de contabilidad o en la ficha de la compañía antes de confirmar el "
+"pago."
+
+#. module: kai_payment_multi_branch
+#. odoo-python
+#: code:addons/kai_payment_multi_branch/models/account_payment.py:0
+msgid ""
+"El pago de varias sucursales solo está soportado en la moneda de la compañía"
+" (%(currency)s). La diferencia de cambio no se reparte entre sucursales."
+msgstr ""
+"El pago de varias sucursales solo está soportado en la moneda de la compañía"
+" (%(currency)s). La diferencia de cambio no se reparte entre sucursales."

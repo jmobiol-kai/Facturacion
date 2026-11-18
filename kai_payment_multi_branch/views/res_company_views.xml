@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_company_form_kai_payment_multi_branch" model="ir.ui.view">
+        <field name="name">res.company.form.kai.payment.multi.branch</field>
+        <field name="model">res.company</field>
+        <field name="inherit_id" ref="base.view_company_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="Pagos multi-sucursal" name="kai_payment_multi_branch">
+                    <group>
+                        <field name="kai_branch_current_account_id"/>
+                        <field name="kai_central_current_account_id"/>
+                    </group>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>

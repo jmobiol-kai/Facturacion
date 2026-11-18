@@ -1,0 +1,567 @@
+from itertools import zip_longest
+
+from odoo import Command, _, api, fields, models
+from odoo.exceptions import UserError, ValidationError
+from odoo.tools.misc import formatLang
+
+CHECK_PAYMENT_CODES = {
+    "own_checks",
+    "new_third_party_checks",
+    "in_third_party_checks",
+    "out_third_party_checks",
+    "return_third_party_checks",
+    "check_printing",
+}
+WITHHOLDING_LINE_FIELDS = (
+    "l10n_ar_withholding_line_ids",
+    "withholding_line_ids",
+)
+CURRENT_ACCOUNT_TYPES = {
+    "asset_receivable",
+    "liability_payable",
+    "asset_cash",
+    "liability_credit_card",
+    "off_balance",
+}
+
+
+class AccountPayment(models.Model):
+    _inherit = "account.payment"
+
+    kai_bridge_move_ids = fields.One2many(
+        "account.move",
+        "kai_origin_payment_id",
+        string="Asientos puente",
+        copy=False,
+    )
+    kai_bridge_move_count = fields.Integer(compute="_compute_kai_bridge_move_count")
+
+    @api.depends("kai_bridge_move_ids")
+    def _compute_kai_bridge_move_count(self):
+        for payment in self:
+            payment.kai_bridge_move_count = len(payment.kai_bridge_move_ids)
+
+    def _kai_is_multi_branch_payment(self):
+        self.ensure_one()
+        return len(self.to_pay_move_line_ids.company_id) > 1
+
+    def _kai_shares_legal_entity(self, companies):
+        """True when every company is the same root and the same legal entity as the payment."""
+        self.ensure_one()
+        payment_company = self.company_id
+        if not payment_company or not companies:
+            return False
+        if any(company.root_id != payment_company.root_id for company in companies):
+            return False
+        legal_entity = payment_company._get_legal_entity_companies()
+        return not (companies - legal_entity)
+
+    def _kai_format_amount(self, amount):
+        self.ensure_one()
+        return formatLang(self.env, amount, currency_obj=self.company_currency_id)
+
+    def _kai_has_withholdings(self):
+        self.ensure_one()
+        for fname in WITHHOLDING_LINE_FIELDS:
+            if fname in self._fields and self[fname]:
+                return True
+        if "withholdings_amount" in self._fields and not self.currency_id.is_zero(self.withholdings_amount or 0.0):
+            return True
+        return False
+
+    def _kai_bridge_journal(self, company):
+        journal = self.env["account.journal"].search(
+            [("company_id", "=", company.id), ("type", "=", "general")],
+            limit=1,
+        )
+        if not journal:
+            raise UserError(
+                _(
+                    "%(company)s no tiene un diario de operaciones varias para el asiento puente.",
+                    company=company.display_name,
+                )
+            )
+        return journal
+
+    def _kai_check_current_account(self, account, company, role):
+        if not account:
+            if role == "branches":
+                raise UserError(
+                    _(
+                        "Falta la cuenta corriente con sucursales en %(company)s. "
+                        "Configurala en Ajustes de contabilidad o en la ficha de la compañía "
+                        "antes de confirmar el pago.",
+                        company=company.display_name,
+                    )
+                )
+            raise UserError(
+                _(
+                    "Falta la cuenta corriente con casa central en %(company)s. "
+                    "Esa cuenta se usa en el asiento puente de la sucursal.",
+                    company=company.display_name,
+                )
+            )
+        if account.account_type in CURRENT_ACCOUNT_TYPES:
+            raise UserError(
+                _(
+                    "La cuenta %(account)s de %(company)s no puede ser a cobrar, a pagar, "
+                    "de banco ni de tarjeta. Elegí una cuenta corriente de activo o de pasivo.",
+                    account=account.display_name,
+                    company=company.display_name,
+                )
+            )
+
+    def _kai_check_multi_branch_ready(self):
+        """Configuration and scope checks that do not need the counterpart amount yet."""
+        for payment in self.filtered(lambda item: item._kai_is_multi_branch_payment()):
+            companies = payment.to_pay_move_line_ids.company_id
+            if not payment._kai_shares_legal_entity(companies):
+                raise UserError(_("You can't create payments for entries belonging to different companies."))
+            if payment.is_internal_transfer:
+                raise UserError(_("Una transferencia interna no puede cancelar deuda de varias sucursales."))
+            if payment.payment_method_code in CHECK_PAYMENT_CODES:
+                raise UserError(
+                    _(
+                        "Los cheques no están soportados en un pago de varias sucursales. "
+                        "Usá un método de pago manual o registrá un pago por sucursal."
+                    )
+                )
+            if payment._kai_has_withholdings():
+                raise UserError(
+                    _(
+                        "Las retenciones no están soportadas en un pago de varias sucursales. "
+                        "Confirmá el pago sin retenciones o registrá un pago por sucursal. "
+                        "Un ajuste de account_payment_pro (write-off) sí se admite si el "
+                        "importe a cancelar coincide con la deuda seleccionada: queda en la "
+                        "compañía del pago."
+                    )
+                )
+            if payment.currency_id != payment.company_currency_id:
+                raise UserError(
+                    _(
+                        "El pago de varias sucursales solo está soportado en la moneda de la "
+                        "compañía (%(currency)s). La diferencia de cambio no se reparte entre sucursales.",
+                        currency=payment.company_currency_id.name,
+                    )
+                )
+            foreign = payment.to_pay_move_line_ids.filtered(
+                lambda line: line.currency_id and line.currency_id != line.company_currency_id
+            )
+            if foreign:
+                names = ", ".join(sorted(set(foreign.currency_id.mapped("name"))))
+                raise UserError(
+                    _(
+                        "Hay líneas a pagar en moneda extranjera (%(currencies)s). "
+                        "El pago multi-sucursal no genera la diferencia de cambio en cada sucursal.",
+                        currencies=names,
+                    )
+                )
+            unposted = payment.to_pay_move_line_ids.filtered(lambda line: line.move_id.state != "posted")
+            if unposted:
+                raise UserError(_("Las líneas a pagar tienen que estar publicadas."))
+            payment._kai_check_current_account(
+                payment.company_id.kai_branch_current_account_id,
+                payment.company_id,
+                "branches",
+            )
+            for company in companies - payment.company_id:
+                payment._kai_check_current_account(
+                    company.kai_central_current_account_id,
+                    company,
+                    "central",
+                )
+                payment._kai_bridge_journal(company)
+
+    def _kai_debt_allocations(self):
+        """Amounts of the payment counterpart that fully clear each selected line.
+
+        The balance is expressed in company currency with the sign of the payment
+        counterpart: a supplier invoice (credit balance) takes a positive debit.
+        """
+        self.ensure_one()
+        allocations = []
+        company_currency = self.company_currency_id
+        for line in self.to_pay_move_line_ids.sorted(key=lambda item: (item.date_maturity or item.date, item.id)):
+            balance = company_currency.round(-line.amount_residual)
+            if company_currency.is_zero(balance):
+                continue
+            allocations.append((line, balance))
+        return allocations
+
+    def _kai_split_counterpart_lines(self, counterpart_lines):
+        self.ensure_one()
+        if len(counterpart_lines) != 1:
+            raise UserError(
+                _(
+                    "No se pudo armar la contrapartida del pago multi-sucursal porque "
+                    "el asiento ya trae más de una línea de contrapartida."
+                )
+            )
+        template = dict(counterpart_lines[0])
+        company_currency = self.company_currency_id
+        total_balance = template["balance"]
+        allocations = self._kai_debt_allocations()
+        debt_balance = company_currency.round(sum(balance for _line, balance in allocations))
+        if not company_currency.is_zero(total_balance - debt_balance):
+            raise UserError(
+                _(
+                    "El pago multi-sucursal tiene que cancelar exactamente la deuda seleccionada "
+                    "(facturas, notas de crédito y notas de débito). El asiento del pago cancela "
+                    "%(payment)s y las líneas seleccionadas suman %(debt)s. Los pagos parciales "
+                    "y los anticipos no están soportados entre sucursales.",
+                    payment=self._kai_format_amount(total_balance),
+                    debt=self._kai_format_amount(debt_balance),
+                )
+            )
+
+        grouped = {}
+        for line, balance in allocations:
+            grouped.setdefault(line.company_id, []).append((line, balance))
+
+        new_lines = []
+        companies = sorted(grouped, key=lambda company: (company != self.company_id, company.id))
+        for company in companies:
+            items = grouped[company]
+            balance = company_currency.round(sum(amount for _line, amount in items))
+            if company_currency.is_zero(balance):
+                # La nota de crédito netea la factura de esa sucursal. El puente
+                # igual las concilia, pero el pago no necesita línea por ese neto.
+                continue
+            if company == self.company_id:
+                accounts = self.env["account.account"].browse({line.account_id.id for line, _amount in items})
+                if len(accounts) > 1:
+                    raise UserError(_("To Pay Lines must be of the same account!"))
+                vals = dict(template)
+                vals.update(
+                    {
+                        "account_id": accounts.id,
+                        "partner_id": self.partner_id.commercial_partner_id.id,
+                        "balance": balance,
+                        "amount_currency": balance,
+                        "currency_id": company_currency.id,
+                    }
+                )
+                new_lines.append(vals)
+                continue
+            vals = dict(template)
+            vals.update(
+                {
+                    "name": _(
+                        "Cuenta corriente %(branch)s · %(partner)s",
+                        branch=company.name,
+                        partner=self.partner_id.display_name,
+                    ),
+                    "account_id": self.company_id.kai_branch_current_account_id.id,
+                    "partner_id": company.partner_id.id,
+                    "balance": balance,
+                    "amount_currency": balance,
+                    "currency_id": company_currency.id,
+                    "kai_settled_company_id": company.id,
+                }
+            )
+            new_lines.append(vals)
+
+        split_total = company_currency.round(sum(line["balance"] for line in new_lines))
+        if not company_currency.is_zero(split_total - total_balance):
+            raise UserError(
+                _(
+                    "No se pudo repartir el pago entre sucursales: la contrapartida suma "
+                    "%(split)s y el pago %(payment)s.",
+                    split=self._kai_format_amount(split_total),
+                    payment=self._kai_format_amount(total_balance),
+                )
+            )
+        return new_lines
+
+    def _prepare_move_lines_per_type(self, write_off_line_vals=None, force_balance=None):
+        res = super()._prepare_move_lines_per_type(
+            write_off_line_vals=write_off_line_vals,
+            force_balance=force_balance,
+        )
+        if not self._kai_is_multi_branch_payment() or not self._kai_shares_legal_entity(
+            self.to_pay_move_line_ids.company_id
+        ):
+            return res
+        # La validación de configuración también corre en action_post. Acá se
+        # repite porque el asiento se arma dentro del write de confirmación.
+        self._kai_check_multi_branch_ready()
+        res["counterpart_lines"] = self._kai_split_counterpart_lines(res.get("counterpart_lines") or [])
+        return res
+
+    def _seek_for_lines(self):
+        liquidity, counterpart, writeoff = super()._seek_for_lines()
+        branch_lines = writeoff.filtered("kai_settled_company_id")
+        if not branch_lines and self.company_id.kai_branch_current_account_id and self._kai_is_multi_branch_payment():
+            account = self.company_id.kai_branch_current_account_id
+            branch_lines = writeoff.filtered(lambda line: line.account_id == account)
+        if branch_lines:
+            counterpart |= branch_lines
+            writeoff -= branch_lines
+        return liquidity, counterpart, writeoff
+
+    def _synchronize_to_moves(self, changed_fields):
+        standard_triggers = set(self._get_trigger_fields_to_synchronize())
+        if not any(field_name in changed_fields for field_name in standard_triggers | {"to_pay_move_line_ids"}):
+            return
+
+        def needs_multi_sync(payment):
+            if not payment.move_id or payment.move_id.state == "posted":
+                return False
+            if payment.move_id.line_ids.filtered("kai_settled_company_id"):
+                return True
+            return payment._kai_is_multi_branch_payment() and payment._kai_shares_legal_entity(
+                payment.to_pay_move_line_ids.company_id
+            )
+
+        multi = self.filtered(needs_multi_sync)
+        others = self - multi
+        if others and any(field_name in changed_fields for field_name in standard_triggers):
+            super(AccountPayment, others)._synchronize_to_moves(changed_fields)
+        for payment in multi:
+            payment._kai_synchronize_multi_branch_move(changed_fields)
+
+    def _kai_synchronize_multi_branch_move(self, changed_fields):
+        """Keep every branch counterpart line. Core only writes the first one."""
+        self.ensure_one()
+        liquidity_lines, counterpart_lines, writeoff_lines = self._seek_for_lines()
+        if "amount" in changed_fields and len(liquidity_lines) > 1:
+            raise UserError(_("You cannot change the amount of a payment with multiple liquidity lines."))
+
+        write_off_line_vals = []
+        if liquidity_lines and counterpart_lines and writeoff_lines:
+            write_off_line_vals.append(
+                {
+                    "name": writeoff_lines[0].name,
+                    "account_id": writeoff_lines[0].account_id.id,
+                    "partner_id": writeoff_lines[0].partner_id.id,
+                    "currency_id": writeoff_lines[0].currency_id.id,
+                    "amount_currency": sum(writeoff_lines.mapped("amount_currency")),
+                    "balance": sum(writeoff_lines.mapped("balance")),
+                }
+            )
+        line_vals_per_type = self._prepare_move_lines_per_type(write_off_line_vals=write_off_line_vals)
+        commands = []
+        for liquidity_line, newline_val in zip_longest(liquidity_lines, line_vals_per_type.get("liquidity_lines", [])):
+            if liquidity_line and newline_val:
+                commands.append(Command.update(liquidity_line.id, newline_val))
+            elif not liquidity_line and newline_val:
+                commands.append(Command.create(newline_val))
+            elif liquidity_line and not newline_val:
+                commands.append(Command.delete(liquidity_line.id))
+        for line in counterpart_lines:
+            commands.append(Command.delete(line.id))
+        for newline_val in line_vals_per_type.get("counterpart_lines", []):
+            commands.append(Command.create(newline_val))
+        for line in writeoff_lines:
+            commands.append(Command.delete(line.id))
+        for extra_line_vals in line_vals_per_type.get("write_off_lines", []) + line_vals_per_type.get(
+            "withholding_lines", []
+        ):
+            commands.append(Command.create(extra_line_vals))
+        to_write = {
+            "date": self.date,
+            "partner_id": self.partner_id.id,
+            "currency_id": self.currency_id.id,
+            "partner_bank_id": self.partner_bank_id.id,
+            "line_ids": commands,
+        }
+        if "journal_id" in changed_fields:
+            to_write.update({"name": "/", "journal_id": self.journal_id.id})
+        self.move_id.with_context(skip_invoice_sync=True).write(to_write)
+
+    @api.constrains("partner_id", "to_pay_move_line_ids")
+    def check_to_pay_lines(self):
+        for rec in self:
+            to_pay_partners = rec.to_pay_move_line_ids.mapped("partner_id")
+            if len(to_pay_partners) > 1:
+                raise ValidationError(_("All to pay lines must be of the same partner"))
+            companies = rec.to_pay_move_line_ids.company_id
+            if len(companies) > 1 and not rec._kai_shares_legal_entity(companies):
+                raise ValidationError(_("You can't create payments for entries belonging to different companies."))
+            if to_pay_partners and to_pay_partners != rec.partner_id.commercial_partner_id:
+                raise ValidationError(
+                    _("Payment is for partner %s but payment lines are of partner %s")
+                    % (rec.partner_id.name, to_pay_partners.name)
+                )
+
+    def _check_to_pay_lines_account(self):
+        regular = self.browse()
+        for rec in self:
+            companies = rec.to_pay_move_line_ids.company_id
+            if len(companies) > 1 and rec._kai_shares_legal_entity(companies):
+                if rec.partner_id and rec.state != "draft" and self.env.context.get("default_mode") != "check_balance":
+                    own = rec.to_pay_move_line_ids.filtered(lambda line: line.company_id == rec.company_id)
+                    if len(own.account_id) > 1:
+                        raise ValidationError(_("To Pay Lines must be of the same account!"))
+                continue
+            regular |= rec
+        if regular:
+            super(AccountPayment, regular)._check_to_pay_lines_account()
+
+    def _reconcile_after_post(self):
+        multi = self.filtered(
+            lambda payment: payment._kai_is_multi_branch_payment()
+            and payment._kai_shares_legal_entity(payment.to_pay_move_line_ids.company_id)
+        )
+        super(AccountPayment, self - multi)._reconcile_after_post()
+        for payment in multi:
+            payment._kai_reconcile_own_company_debt()
+
+    def _kai_reconcile_own_company_debt(self):
+        """Reconcile only the debt that lives on the payment company.
+
+        Branch invoices stay open until the bridge move, posted in their own
+        company, clears them. Matching them here would debit the payable of the
+        paying company and leave the branch payable inverted.
+        """
+        self.ensure_one()
+        if not self.company_id.use_payment_pro or self.is_internal_transfer:
+            return
+        valid_types = set(self._get_valid_payment_account_types())
+        counterpart = self.move_id.line_ids.filtered(
+            lambda line: not line.reconciled and line.account_id.account_type in valid_types
+        )
+        if len(counterpart) != 1:
+            return
+        debt = self.to_pay_move_line_ids.filtered(
+            lambda line: not line.reconciled
+            and line.company_id == self.company_id
+            and line.account_id == counterpart.account_id
+        )
+        if not debt:
+            return
+        debt = self._get_debt_lines_covered(counterpart, debt)
+        if debt:
+            (counterpart + debt).reconcile()
+
+    def _kai_create_bridge_moves(self):
+        for payment in self:
+            if payment.kai_bridge_move_ids or not payment._kai_is_multi_branch_payment():
+                continue
+            grouped = {}
+            for line, balance in payment._kai_debt_allocations():
+                if line.company_id == payment.company_id:
+                    continue
+                grouped.setdefault(line.company_id, []).append((line, balance))
+            for company, items in grouped.items():
+                payment._kai_create_bridge_move(company, items)
+
+    def _kai_create_bridge_move(self, company, items):
+        self.ensure_one()
+        journal = self._kai_bridge_journal(company)
+        company_currency = company.currency_id
+        label = _("Cancelación %(payment)s", payment=self.name or self.display_name)
+        commands = []
+        for line, balance in items:
+            commands.append(
+                Command.create(
+                    {
+                        "name": label,
+                        "account_id": line.account_id.id,
+                        "partner_id": line.partner_id.id,
+                        "currency_id": company_currency.id,
+                        "amount_currency": balance,
+                        "balance": balance,
+                        "kai_debt_move_line_id": line.id,
+                        "kai_settled_company_id": company.id,
+                    }
+                )
+            )
+        cc_balance = company_currency.round(-sum(balance for _line, balance in items))
+        if not company_currency.is_zero(cc_balance):
+            commands.append(
+                Command.create(
+                    {
+                        "name": _("Cuenta corriente %(central)s", central=self.company_id.name),
+                        "account_id": company.kai_central_current_account_id.id,
+                        "partner_id": self.company_id.partner_id.id,
+                        "currency_id": company_currency.id,
+                        "amount_currency": cc_balance,
+                        "balance": cc_balance,
+                    }
+                )
+            )
+        allowed = list(set(self.env.companies.ids) | {company.id, self.company_id.id})
+        move = (
+            self.env["account.move"]
+            .with_context(allowed_company_ids=allowed)
+            .with_company(company)
+            .create(
+                {
+                    "move_type": "entry",
+                    "journal_id": journal.id,
+                    "date": self.date,
+                    "ref": self.name or self.display_name,
+                    "company_id": company.id,
+                    "kai_origin_payment_id": self.id,
+                    "line_ids": commands,
+                }
+            )
+        )
+        move.action_post()
+        for line, _balance in items:
+            bridge_line = move.line_ids.filtered(lambda candidate, debt=line: candidate.kai_debt_move_line_id == debt)
+            if len(bridge_line) != 1:
+                raise UserError(
+                    _(
+                        "No se encontró la línea puente de %(company)s para conciliar %(move)s.",
+                        company=company.display_name,
+                        move=line.move_id.display_name,
+                    )
+                )
+            (line + bridge_line).with_company(company).reconcile()
+
+    def _kai_bridge_moves_to_drop(self):
+        # sudo: el asiento vive en la sucursal. Si el usuario no la tiene
+        # seleccionada, la regla de compañía lo escondería y el pago quedaría
+        # cancelado con la deuda de la sucursal todavía conciliada.
+        return self.env["account.move"].sudo().search([("kai_origin_payment_id", "in", self.ids)])
+
+    def _kai_remove_bridge_moves(self):
+        moves = self._kai_bridge_moves_to_drop()
+        if not moves:
+            return
+        partials = moves.line_ids.matched_debit_ids | moves.line_ids.matched_credit_ids
+        if partials:
+            partials.unlink()
+        posted = moves.filtered(lambda move: move.state == "posted")
+        if posted:
+            posted.button_draft()
+        cancelled = moves.filtered(lambda move: move.state == "cancel")
+        if cancelled:
+            cancelled.button_draft()
+        moves.with_context(force_delete=True).unlink()
+
+    def action_post(self):
+        multi = self.filtered(lambda payment: payment.state != "canceled" and payment._kai_is_multi_branch_payment())
+        multi._kai_check_multi_branch_ready()
+        res = super().action_post()
+        posted = multi.filtered(lambda payment: payment.state != "canceled" and payment.move_id.state == "posted")
+        posted._kai_create_bridge_moves()
+        return res
+
+    def action_draft(self):
+        self._kai_remove_bridge_moves()
+        return super().action_draft()
+
+    def action_cancel(self):
+        self._kai_remove_bridge_moves()
+        return super().action_cancel()
+
+    def unlink(self):
+        self._kai_remove_bridge_moves()
+        return super().unlink()
+
+    def action_open_kai_bridge_moves(self):
+        self.ensure_one()
+        action = {
+            "name": _("Asientos puente"),
+            "type": "ir.actions.act_window",
+            "res_model": "account.move",
+            "view_mode": "list,form",
+            "domain": [("id", "in", self.kai_bridge_move_ids.ids)],
+            "context": {"create": False},
+        }
+        if len(self.kai_bridge_move_ids) == 1:
+            action.update({"view_mode": "form", "res_id": self.kai_bridge_move_ids.id})
+        return action
