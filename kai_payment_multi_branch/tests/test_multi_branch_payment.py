@@ -576,3 +576,22 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         text = html.decode() if isinstance(html, bytes) else str(html)
         self.assertIn(yesterday_bill.name, text)
         self.assertIn(fisa_bill.name, text)
+
+    def test_regularized_payment_shows_the_invoice_once(self):
+        bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        lines = self._debt_lines(bill)
+        payment = self._legacy_payment("supplier", self.vendor, lines)
+        self._wizard(payment).action_regularize()
+        self._assert_paid_tab(payment, lines)
+        self.assertFalse(payment.matched_move_line_ids.filtered(
+            lambda line: line.move_id.kai_origin_payment_id == payment
+        ))
+        html = self.env["ir.actions.report"]._render_template(
+            "account_payment_pro.report_payment_receipt_document_pro",
+            {"o": payment, "_": _},
+        )
+        text = html.decode() if isinstance(html, bytes) else str(html)
+        self.assertIn(bill.name, text)
+        self.assertNotIn("Regularización", text)
+        self.assertNotIn("On account", text)
+        self.assertNotIn("A cuenta", text)

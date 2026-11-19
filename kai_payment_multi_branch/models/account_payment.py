@@ -877,6 +877,13 @@ class AccountPayment(models.Model):
         super()._compute_matched_move_line_ids()
         valid_types = set(self._get_valid_payment_account_types())
         for payment in self.filtered("id"):
+            # Adhoc already lists the reclass line of "Regularizar pago existente":
+            # the payment reconciles it directly. Drop it before adding the invoice,
+            # and also when this payment has no bridge lines yet.
+            existing = payment.matched_move_line_ids.filtered(
+                lambda line: line.move_id.kai_origin_payment_id != payment
+            )
+            payment.matched_move_line_ids = existing
             bridge_lines = payment.sudo().kai_bridge_move_ids.line_ids.filtered(
                 lambda line: line.account_type in valid_types
             )

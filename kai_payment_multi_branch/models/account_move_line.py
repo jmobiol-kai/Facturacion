@@ -103,9 +103,18 @@ class AccountMoveLine(models.Model):
         )
         if not bridge_lines:
             return
+        payment_lines = payments.move_id.line_ids
         for line in self:
+            # The reclass line is reconciled with the payment itself. super()
+            # already counted that partial; adding the bridge on top would
+            # double the amount. The invoice is not one of these lines.
+            if line.move_id.kai_origin_payment_id in payments:
+                continue
             debit_partials = bridge_lines.matched_debit_ids.filtered(lambda partial: partial.debit_move_id == line)
             credit_partials = bridge_lines.matched_credit_ids.filtered(lambda partial: partial.credit_move_id == line)
+            # A partial already touching the payment move was counted by super().
+            debit_partials = debit_partials.filtered(lambda partial: partial.credit_move_id not in payment_lines)
+            credit_partials = credit_partials.filtered(lambda partial: partial.debit_move_id not in payment_lines)
             if not debit_partials and not credit_partials:
                 continue
             line.payment_matched_currency_id = main_payment.destination_currency_id or main_payment.company_currency_id
