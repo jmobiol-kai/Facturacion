@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- The core rule is global and noupdate, so this XML update is skipped
+         on a normal install. models/account_move_line.py init() writes the
+         same domain. A second global rule would be AND-ed and could not
+         show the branch lines. -->
+    <record id="account.account_move_line_comp_rule" model="ir.rule">
+        <field name="domain_force">['|', ('company_id', 'in', company_ids), ('kai_settled_by_company_ids', 'in', company_ids)]</field>
+    </record>
+</odoo>

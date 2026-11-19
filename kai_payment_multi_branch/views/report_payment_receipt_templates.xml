@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="report_payment_receipt_document_pro_multi_branch" inherit_id="account_payment_pro.report_payment_receipt_document_pro">
+        <xpath expr="//t[@t-set='matched_lines']" position="attributes">
+            <attribute name="t-value">payment_bundle.with_context(matched_payment_ids=payment_bundle.ids).mapped('matched_move_line_ids').sudo().sorted(key=lambda l: (l.date_maturity or l.date, l.id))</attribute>
+        </xpath>
+    </template>
+</odoo>

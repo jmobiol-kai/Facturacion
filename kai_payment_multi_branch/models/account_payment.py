@@ -608,6 +608,7 @@ class AccountPayment(models.Model):
                     )
                 )
             (line + bridge_line).with_company(company).reconcile()
+        self.env["account.move.line"].browse([line.id for line, _balance in items])._kai_refresh_settled_companies()
 
     def _kai_bridge_moves_to_drop(self):
         # sudo: el asiento vive en la sucursal. Si el usuario no la tiene
@@ -619,9 +620,12 @@ class AccountPayment(models.Model):
         moves = self._kai_bridge_moves_to_drop()
         if not moves:
             return
+        debt_lines = moves.line_ids.filtered("kai_debt_move_line_id").kai_debt_move_line_id
         partials = moves.line_ids.matched_debit_ids | moves.line_ids.matched_credit_ids
         if partials:
             partials.unlink()
+        if debt_lines:
+            debt_lines._kai_refresh_settled_companies()
         posted = moves.filtered(lambda move: move.state == "posted")
         if posted:
             posted.button_draft()
@@ -867,3 +871,30 @@ class AccountPayment(models.Model):
         if len(self.kai_bridge_move_ids) == 1:
             action.update({"view_mode": "form", "res_id": self.kai_bridge_move_ids.id})
         return action
+
+    @api.depends("move_id.line_ids", "kai_bridge_move_ids.line_ids")
+    def _compute_matched_move_line_ids(self):
+        super()._compute_matched_move_line_ids()
+        valid_types = set(self._get_valid_payment_account_types())
+        for payment in self.filtered("id"):
+            bridge_lines = payment.sudo().kai_bridge_move_ids.line_ids.filtered(
+                lambda line: line.account_type in valid_types
+            )
+            if not bridge_lines:
+                continue
+            counterparts = (
+                bridge_lines.matched_debit_ids.debit_move_id | bridge_lines.matched_credit_ids.credit_move_id
+            )
+            exchange_moves = bridge_lines.matched_debit_ids.exchange_move_id | bridge_lines.matched_credit_ids.exchange_move_id
+            counterparts = counterparts.filtered(lambda line: line.move_id not in exchange_moves)
+            counterparts -= bridge_lines
+            counterparts = counterparts.filtered(
+                lambda line: line.move_id.kai_origin_payment_id != payment and line.move_id != payment.move_id
+            )
+            existing = payment.matched_move_line_ids
+            extra = counterparts - existing
+            extra_with_date = extra.filtered("date_maturity").sorted(
+                key=lambda line: (line.date_maturity, line.move_id.name or "")
+            )
+            extra_without_date = extra - extra_with_date
+            payment.matched_move_line_ids = existing | extra_with_date | extra_without_date

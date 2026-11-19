@@ -1,7 +1,7 @@
 from datetime import timedelta
 from unittest.mock import patch
 
-from odoo import Command, fields
+from odoo import Command, _, fields
 from odoo.addons.account.tests.common import AccountTestInvoicingCommon
 from odoo.exceptions import UserError
 from odoo.tests import tagged
@@ -508,3 +508,71 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         with self.assertRaises(UserError) as error:
             blocked.action_post()
         self.assertIn("misceláneas", str(error.exception))
+
+    def _assert_paid_tab(self, payment, lines):
+        payment.invalidate_recordset(["matched_move_line_ids", "matched_amount", "unmatched_amount"])
+        self.assertEqual(set(payment.matched_move_line_ids.ids), set(lines.ids))
+        self.assertAlmostEqual(payment.matched_amount, payment.amount, places=2)
+        self.assertTrue(payment.currency_id.is_zero(payment.unmatched_amount))
+
+    def test_paid_tab_includes_branch_invoices(self):
+        yesterday_bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        fisa_bill = self._invoice(self.fisa, "in_invoice", self.vendor, 50)
+        lines = self._debt_lines(yesterday_bill | fisa_bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        payment.action_post()
+        self._assert_paid_tab(payment, lines)
+
+        payment.action_draft()
+        payment.invalidate_recordset(["matched_move_line_ids", "matched_amount", "unmatched_amount"])
+        self.assertFalse(payment.matched_move_line_ids)
+        self.assertTrue(payment.currency_id.is_zero(payment.matched_amount))
+        self.assertTrue(payment.currency_id.is_zero(payment.unmatched_amount))
+        self.assertFalse(lines.kai_settled_by_company_ids)
+
+    def test_paid_tab_mixed_central_and_branch(self):
+        central_bill = self._invoice(self.company, "in_invoice", self.vendor, 80)
+        yesterday_bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 120)
+        lines = self._debt_lines(central_bill | yesterday_bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        payment.action_post()
+        self._assert_paid_tab(payment, lines)
+        self.assertFalse(payment.matched_move_line_ids.filtered(
+            lambda line: line.move_id.kai_origin_payment_id == payment
+        ))
+
+    def test_payment_receipt_with_only_central_company_selected(self):
+        yesterday_bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 70)
+        fisa_bill = self._invoice(self.fisa, "in_invoice", self.vendor, 30)
+        lines = self._debt_lines(yesterday_bill | fisa_bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        payment.action_post()
+        user = self.env["res.users"].create({
+            "name": "Contable central",
+            "login": "contable_central_mb",
+            "email": "contable_central_mb@example.com",
+            "company_id": self.company.id,
+            "company_ids": [Command.set(self.company.ids)],
+            "group_ids": [Command.set([
+                self.env.ref("base.group_user").id,
+                self.env.ref("account.group_account_user").id,
+            ])],
+        })
+        restricted = payment.with_user(user).with_context(allowed_company_ids=[self.company.id])
+        self.assertEqual(set(restricted.matched_move_line_ids.ids), set(lines.ids))
+        paid_tab = restricted.web_read({
+            "matched_move_line_ids": {"fields": {"id": {}}},
+        })
+        shown_ids = {row["id"] for row in paid_tab[0]["matched_move_line_ids"]}
+        self.assertEqual(shown_ids, set(lines.ids))
+        self.assertAlmostEqual(restricted.matched_amount, 100.0, places=2)
+        self.assertTrue(restricted.currency_id.is_zero(restricted.unmatched_amount))
+        html = self.env["ir.actions.report"].with_user(user).with_context(
+            allowed_company_ids=[self.company.id]
+        )._render_template(
+            "account_payment_pro.report_payment_receipt_document_pro",
+            {"o": restricted, "_": _},
+        )
+        text = html.decode() if isinstance(html, bytes) else str(html)
+        self.assertIn(yesterday_bill.name, text)
+        self.assertIn(fisa_bill.name, text)
