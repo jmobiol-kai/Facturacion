@@ -1,7 +1,7 @@
 {
     "name": "Factura de compra: una línea por orden de compra",
-    "summary": "Al facturar una o varias órdenes de compra, permite elegir entre el detalle de productos o un solo renglón por orden (y por alícuota, si una orden combina impuestos distintos).",
-    "version": "19.0.1.0.0",
+    "summary": "Al facturar órdenes de compra, una sección por orden seguida de los productos reales. El PDF muestra un importe por orden sin sacar el producto del asiento.",
+    "version": "19.0.1.1.0",
     "category": "Inventory/Purchase",
     "author": "Mariano Boisselier",
     "license": "LGPL-3",

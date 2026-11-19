@@ -1,0 +1,91 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* kai_sale_invoice_by_order
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 19.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-19 00:00+0000\n"
+"PO-Revision-Date: 2026-11-19 00:00+0000\n"
+"Last-Translator: Kaizendo\n"
+"Language-Team: Spanish (Argentina)\n"
+"Language: es_AR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. module: kai_sale_invoice_by_order
+#: model:ir.model.fields,field_description:kai_sale_invoice_by_order.field_res_company__invoice_by_sale_order
+#: model:ir.model.fields,field_description:kai_sale_invoice_by_order.field_res_config_settings__invoice_by_sale_order
+msgid "Agrupar la factura por pedido de venta"
+msgstr "Agrupar la factura por pedido de venta"
+
+#. module: kai_sale_invoice_by_order
+#: model:ir.model.fields,help:kai_sale_invoice_by_order.field_res_company__invoice_by_sale_order
+msgid ""
+"Al crear una factura, cada pedido queda como una sección con su referencia y "
+"debajo los productos reales (cantidad, unidad, precio y vínculo con la línea "
+"de venta). En el PDF y el portal la sección se imprime como un importe por "
+"pedido, o uno por alícuota si el pedido combina impuestos. Así el costo de "
+"ventas usa el producto correcto al publicar."
+msgstr ""
+"Al crear una factura, cada pedido queda como una sección con su referencia y "
+"debajo los productos reales (cantidad, unidad, precio y vínculo con la línea "
+"de venta). En el PDF y el portal la sección se imprime como un importe por "
+"pedido, o uno por alícuota si el pedido combina impuestos. Así el costo de "
+"ventas usa el producto correcto al publicar."
+
+#. module: kai_sale_invoice_by_order
+#: model:ir.model.fields,field_description:kai_sale_invoice_by_order.field_account_move_line__kai_sale_order_id
+msgid "Pedido de venta de la sección"
+msgstr "Pedido de venta de la sección"
+
+#. module: kai_sale_invoice_by_order
+#: model:ir.model.fields,help:kai_sale_invoice_by_order.field_account_move_line__kai_sale_order_id
+msgid ""
+"En la sección que agrupa un pedido. Cada producto conserva sus líneas de venta "
+"en sale_line_ids."
+msgstr ""
+"En la sección que agrupa un pedido. Cada producto conserva sus líneas de venta "
+"en sale_line_ids."
+
+#. module: kai_sale_invoice_by_order
+#: model:ir.model.fields,field_description:kai_sale_invoice_by_order.field_account_move_line__kai_invoice_by_order
+msgid "Línea agrupada por pedido de venta"
+msgstr "Línea agrupada por pedido de venta"
+
+#. module: kai_sale_invoice_by_order
+#: model:ir.model.fields,help:kai_sale_invoice_by_order.field_sale_advance_payment_inv__invoice_line_mode
+msgid ""
+"Una línea por producto suma las cantidades del mismo producto cuando coinciden "
+"el precio unitario, el descuento, los impuestos, la unidad de medida, la cuenta "
+"contable y la distribución analítica, y conserva el vínculo con todas las "
+"líneas de venta. Un renglón por orden de venta antepone una sección con la "
+"referencia del pedido y mantiene los productos: el PDF muestra un importe por "
+"pedido (o por alícuota) y el asiento conserva el producto para el costo de "
+"ventas. Sin consolidar deja una línea por cada línea de venta."
+msgstr ""
+"Una línea por producto suma las cantidades del mismo producto cuando coinciden "
+"el precio unitario, el descuento, los impuestos, la unidad de medida, la cuenta "
+"contable y la distribución analítica, y conserva el vínculo con todas las "
+"líneas de venta. Un renglón por orden de venta antepone una sección con la "
+"referencia del pedido y mantiene los productos: el PDF muestra un importe por "
+"pedido (o por alícuota) y el asiento conserva el producto para el costo de "
+"ventas. Sin consolidar deja una línea por cada línea de venta."
+
+#. module: kai_sale_invoice_by_order
+#: model:ir.model.fields.selection,name:kai_sale_invoice_by_order.selection__sale_advance_payment_inv__invoice_line_mode__products
+msgid "Una línea por producto"
+msgstr "Una línea por producto"
+
+#. module: kai_sale_invoice_by_order
+#: model:ir.model.fields.selection,name:kai_sale_invoice_by_order.selection__sale_advance_payment_inv__invoice_line_mode__by_order
+msgid "Un renglón por orden de venta"
+msgstr "Un renglón por orden de venta"
+
+#. module: kai_sale_invoice_by_order
+#: model:ir.model.fields.selection,name:kai_sale_invoice_by_order.selection__sale_advance_payment_inv__invoice_line_mode__native
+msgid "Sin consolidar"
+msgstr "Sin consolidar"

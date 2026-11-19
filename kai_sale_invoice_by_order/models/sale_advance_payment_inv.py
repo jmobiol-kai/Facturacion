@@ -18,9 +18,12 @@ class SaleAdvancePaymentInv(models.TransientModel):
         default=lambda self: "by_order" if self.env.company.invoice_by_sale_order else "products",
         help="Una línea por producto suma las cantidades del mismo producto cuando "
              "coinciden el precio unitario, el descuento, los impuestos, la unidad "
-             "de medida, la cuenta contable y la distribución analítica. "
-             "Un renglón por orden de venta agrupa cada pedido en una sola línea "
-             "(o una por alícuota, si un pedido combina impuestos distintos). "
+             "de medida, la cuenta contable y la distribución analítica, y conserva "
+             "el vínculo con todas las líneas de venta. "
+             "Un renglón por orden de venta antepone una sección con la referencia "
+             "del pedido y mantiene los productos: el PDF muestra un importe por "
+             "pedido (o por alícuota) y el asiento conserva el producto para el "
+             "costo de ventas. "
              "Sin consolidar deja una línea por cada línea de venta.",
     )
 

@@ -1,0 +1,80 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* kai_purchase_bill_by_order
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 19.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-19 00:00+0000\n"
+"PO-Revision-Date: 2026-11-19 00:00+0000\n"
+"Last-Translator: Kaizendo\n"
+"Language-Team: Spanish (Argentina)\n"
+"Language: es_AR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. module: kai_purchase_bill_by_order
+#: model:ir.model.fields,field_description:kai_purchase_bill_by_order.field_res_company__bill_by_purchase_order
+#: model:ir.model.fields,field_description:kai_purchase_bill_by_order.field_res_config_settings__bill_by_purchase_order
+msgid "Agrupar la factura de proveedor por orden de compra"
+msgstr "Agrupar la factura de proveedor por orden de compra"
+
+#. module: kai_purchase_bill_by_order
+#: model:ir.model.fields,help:kai_purchase_bill_by_order.field_res_company__bill_by_purchase_order
+msgid ""
+"Al crear una factura de proveedor, cada orden queda como una sección con su "
+"referencia y debajo los productos reales (cantidad, unidad, precio y vínculo "
+"con la línea de compra). En el PDF y el portal la sección se imprime como un "
+"importe por orden, o uno por alícuota si la orden combina impuestos. Así la "
+"valuación y el costo usan el producto correcto al publicar."
+msgstr ""
+"Al crear una factura de proveedor, cada orden queda como una sección con su "
+"referencia y debajo los productos reales (cantidad, unidad, precio y vínculo "
+"con la línea de compra). En el PDF y el portal la sección se imprime como un "
+"importe por orden, o uno por alícuota si la orden combina impuestos. Así la "
+"valuación y el costo usan el producto correcto al publicar."
+
+#. module: kai_purchase_bill_by_order
+#: model:ir.model.fields,field_description:kai_purchase_bill_by_order.field_account_move_line__kai_purchase_order_id
+msgid "Orden de compra de la sección"
+msgstr "Orden de compra de la sección"
+
+#. module: kai_purchase_bill_by_order
+#: model:ir.model.fields,help:kai_purchase_bill_by_order.field_account_move_line__kai_purchase_order_id
+msgid ""
+"En la sección que agrupa una orden. Cada producto conserva su propia línea de "
+"compra en purchase_line_id."
+msgstr ""
+"En la sección que agrupa una orden. Cada producto conserva su propia línea de "
+"compra en purchase_line_id."
+
+#. module: kai_purchase_bill_by_order
+#: model:ir.model.fields,field_description:kai_purchase_bill_by_order.field_account_move_line__kai_bill_by_order
+msgid "Línea agrupada por orden de compra"
+msgstr "Línea agrupada por orden de compra"
+
+#. module: kai_purchase_bill_by_order
+#: model:ir.model.fields,help:kai_purchase_bill_by_order.field_kai_purchase_bill_wizard__invoice_line_mode
+msgid ""
+"Detalle de productos deja una línea por producto, como en la orden, sin "
+"sección. Un renglón por orden de compra antepone una sección con la referencia "
+"de la orden y mantiene los productos: el PDF muestra un importe por orden (o "
+"por alícuota) y el asiento conserva el producto para la valuación y el costo."
+msgstr ""
+"Detalle de productos deja una línea por producto, como en la orden, sin "
+"sección. Un renglón por orden de compra antepone una sección con la referencia "
+"de la orden y mantiene los productos: el PDF muestra un importe por orden (o "
+"por alícuota) y el asiento conserva el producto para la valuación y el costo."
+
+#. module: kai_purchase_bill_by_order
+#: model:ir.model.fields.selection,name:kai_purchase_bill_by_order.selection__kai_purchase_bill_wizard__invoice_line_mode__products
+msgid "Detalle de productos"
+msgstr "Detalle de productos"
+
+#. module: kai_purchase_bill_by_order
+#: model:ir.model.fields.selection,name:kai_purchase_bill_by_order.selection__kai_purchase_bill_wizard__invoice_line_mode__by_order
+msgid "Un renglón por orden de compra"
+msgstr "Un renglón por orden de compra"

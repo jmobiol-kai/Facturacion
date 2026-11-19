@@ -18,13 +18,35 @@ class AccountMoveLine(models.Model):
              "de venta según los mapas. Si se modifica la cantidad (por ejemplo en "
              "una nota de crédito parcial), el reparto se escala en proporción.",
     )
+    kai_sale_order_id = fields.Many2one(
+        "sale.order",
+        string="Pedido de venta de la sección",
+        copy=True,
+        help="En la sección que agrupa un pedido. Cada producto conserva sus "
+             "líneas de venta en sale_line_ids.",
+    )
+
+    def _get_collapsed_lines(self, children_lines):
+        """Agrupa por alícuota aunque los productos no vengan ordenados por impuesto."""
+        if self.display_type == "line_section" and self.kai_invoice_by_order:
+            children_lines = children_lines.sorted(
+                lambda line: (
+                    0 if line.display_type == "product" else 1,
+                    tuple(sorted(line.tax_ids.ids)),
+                    line.sequence,
+                    line.id,
+                )
+            )
+        return super()._get_collapsed_lines(children_lines)
 
     def _kai_qty_for_sale_line(self, sale_line):
         """Cantidad de esta línea de factura imputable a una línea de venta.
 
-        En el renglón por pedido el mapa es absoluto (la cantidad de la línea
-        de factura es siempre 1). En la línea por producto el mapa está en la
-        unidad de la venta y se escala si la cantidad de la factura cambió.
+        Las facturas nuevas agrupadas por pedido no usan este mapa: cada
+        producto conserva su cantidad y su sale_line_ids. El mapa absoluto
+        (cantidad de factura 1) queda para comprobantes ya emitidos con el
+        renglón único. En la línea por producto el mapa está en la unidad de
+        la venta y se escala si la cantidad de la factura cambió.
         """
         self.ensure_one()
         qty_map = self.kai_invoice_by_order_qty_map or {}
