@@ -160,22 +160,84 @@ class TestBillByPurchaseOrder(AccountTestInvoicingCommon):
             self.assertAlmostEqual(line.qty_invoiced, 0.0)
         self.assertEqual(order.invoice_status, "to invoice")
 
+    def _set_received_qty(self, order, quantity):
+        """Cantidad recibida manual, o una recepción real si purchase_stock está instalado.
+
+        Con purchase_stock, todo consumible usa qty_received_method = stock_moves
+        y qty_received_manual se ignora.
+        """
+        line = order.order_line
+        if line.qty_received_method == "stock_moves":
+            pickings = order.picking_ids.filtered(
+                lambda picking: picking.state not in ("done", "cancel")
+            )
+            self.assertTrue(pickings, "La orden no tiene una recepción abierta.")
+            for picking in pickings:
+                if "create_backorder" in picking.picking_type_id._fields:
+                    picking.picking_type_id.create_backorder = "always"
+                picking.action_assign()
+                pending = picking.move_ids.filtered(
+                    lambda move: move.state not in ("done", "cancel")
+                )
+                self.assertTrue(pending)
+                for move in pending:
+                    move.quantity = quantity
+                    move.picked = True
+                result = picking.button_validate()
+                if isinstance(result, dict) and result.get("res_model"):
+                    wizard = self.env[result["res_model"]].with_context(
+                        **(result.get("context") or {})
+                    ).create({})
+                    wizard.process()
+        else:
+            line.qty_received_manual = quantity
+        line.invalidate_recordset(["qty_received", "qty_to_invoice"])
+
     def test_posted_bill_and_partial_receipt(self):
         order = self._make_order(self.partner_a, [(4, 25.0, self.tax_a)])
         order.order_line.product_id.purchase_method = "receive"
-        order.order_line.qty_received_manual = 1.0
-        order.order_line.invalidate_recordset(["qty_to_invoice"])
-        self.assertAlmostEqual(order.order_line.qty_to_invoice, 1.0)
+        line = order.order_line
+        self._set_received_qty(order, 1.0)
+        self.assertAlmostEqual(line.qty_received, 1.0)
+        self.assertAlmostEqual(line.qty_to_invoice, 1.0)
         self._wizard(order).action_create_bills()
-        self.assertAlmostEqual(order.order_line.qty_invoiced, 1.0)
+        self.assertAlmostEqual(line.qty_invoiced, 1.0)
         bill = order.invoice_ids
         self.assertAlmostEqual(self._bill_lines(bill).price_subtotal, 25.0, places=2)
         bill.invoice_date = bill.date
         bill.action_post()
-        self.assertAlmostEqual(order.order_line.qty_invoiced, 1.0)
-        order.order_line.qty_received_manual = 4.0
-        self.assertAlmostEqual(order.order_line.qty_to_invoice, 3.0)
+        self.assertAlmostEqual(line.qty_invoiced, 1.0)
+        if line.qty_received_method == "stock_moves":
+            self._set_received_qty(order, 3.0)
+        else:
+            self._set_received_qty(order, 4.0)
+        self.assertAlmostEqual(line.qty_received, 4.0)
+        self.assertAlmostEqual(line.qty_to_invoice, 3.0)
         self.assertEqual(order.invoice_status, "to invoice")
+
+    def test_grouped_section_amount_is_the_exact_subtotal_sum(self):
+        """Con IVA incluido, el importe de la sección es la suma de los price_subtotal."""
+        tax = self.env["account.tax"].create({
+            "name": "IVA 21% incluido compras kai",
+            "amount": 21.0,
+            "amount_type": "percent",
+            "type_tax_use": "purchase",
+            "price_include_override": "tax_included",
+        })
+        order = self._make_order(self.partner_a, [
+            (1, price, tax) for price in (10.10, 20.20, 30.05, 40.07, 50.09, 33.33)
+        ])
+        self._wizard(order).action_create_bills()
+        bill = order.invoice_ids
+        lines = self._bill_lines(bill)
+        section = self._sections(bill)
+        self.assertEqual(len(section), 1)
+        expected = section._kai_exact_monetary_sum(lines.mapped("price_subtotal"))
+        collapsed = section._get_child_lines()
+        self.assertAlmostEqual(sum(item["price_subtotal"] for item in collapsed), expected, places=2)
+        # El PDF imprime price_total cuando la compañía tiene el impuesto incluido.
+        self.assertAlmostEqual(sum(item["price_total"] for item in collapsed), expected, places=2)
+        self.assertAlmostEqual(expected, bill.amount_untaxed, places=2)
 
     def test_not_billable_orders_are_rejected(self):
         order = self._make_order(self.partner_a, [(1, 100.0, self.tax_a)])

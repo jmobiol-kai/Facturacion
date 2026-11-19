@@ -143,6 +143,32 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         for line in order.order_line.filtered(lambda l: not l.display_type):
             self.assertAlmostEqual(line.qty_invoiced, line.product_uom_qty)
 
+    def test_grouped_section_amount_is_the_exact_subtotal_sum(self):
+        """Con IVA incluido, el importe de la sección es la suma de los price_subtotal."""
+        tax = self.env["account.tax"].create({
+            "name": "IVA 21% incluido ventas kai",
+            "amount": 21.0,
+            "amount_type": "percent",
+            "type_tax_use": "sale",
+            "price_include_override": "tax_included",
+        })
+        product = self.company_data["product_order_no"]
+        order = self._make_order(self.partner_a, [
+            (product, 1, price, tax)
+            for price in (10.10, 20.20, 30.05, 40.07, 50.09, 33.33)
+        ])
+        invoice = order._create_invoices()
+        lines = self._product_lines(invoice)
+        section = self._sections(invoice)
+        self.assertEqual(len(section), 1)
+        expected = section._kai_exact_monetary_sum(lines.mapped("price_subtotal"))
+        collapsed = section._get_child_lines()
+        self.assertAlmostEqual(sum(item["price_subtotal"] for item in collapsed), expected, places=2)
+        self.assertAlmostEqual(sum(item["price_total"] for item in collapsed), expected, places=2)
+        self.assertAlmostEqual(expected, invoice.amount_untaxed, places=2)
+        for line in order.order_line.filtered(lambda l: not l.display_type):
+            self.assertAlmostEqual(line.qty_invoiced, line.product_uom_qty)
+
     def test_setting_off_keeps_native_lines(self):
         self.env.company.invoice_by_sale_order = False
         product = self.company_data["product_order_no"]

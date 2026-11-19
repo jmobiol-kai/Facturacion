@@ -1,5 +1,8 @@
+from itertools import groupby
+
 from odoo import fields, models
 from odoo.tools import float_is_zero
+from odoo.tools.float_utils import float_round
 
 
 class AccountMoveLine(models.Model):
@@ -26,18 +29,58 @@ class AccountMoveLine(models.Model):
              "líneas de venta en sale_line_ids.",
     )
 
+    def _kai_exact_monetary_sum(self, amounts):
+        """Suma importes en la unidad mínima de la moneda, sin deriva binaria."""
+        self.ensure_one()
+        currency = self.currency_id or self.company_currency_id
+        rounding = currency.rounding or 0.01
+        units = 0.0
+        for amount in amounts:
+            units += float_round((amount or 0.0) / rounding, precision_digits=0)
+        return currency.round(units * rounding)
+
     def _get_collapsed_lines(self, children_lines):
-        """Agrupa por alícuota aunque los productos no vengan ordenados por impuesto."""
-        if self.display_type == "line_section" and self.kai_invoice_by_order:
-            children_lines = children_lines.sorted(
-                lambda line: (
-                    0 if line.display_type == "product" else 1,
-                    tuple(sorted(line.tax_ids.ids)),
-                    line.sequence,
-                    line.id,
-                )
-            )
-        return super()._get_collapsed_lines(children_lines)
+        """El importe impreso de la sección es la suma exacta de los netos.
+
+        Con precio e IVA incluido, sumar los subtotales en flotante (o mostrar
+        la suma de los totales) puede dejar un centavo de más respecto del neto
+        contable. El PDF usa price_subtotal o price_total según la compañía:
+        en esta sección los dos valen la suma de price_subtotal.
+        """
+        if not (self.display_type == "line_section" and self.kai_invoice_by_order):
+            return super()._get_collapsed_lines(children_lines)
+        product_lines = children_lines.filtered(
+            lambda line: line.display_type == "product"
+        ).sorted(lambda line: (tuple(sorted(line.tax_ids.ids)), line.sequence, line.id))
+        result = []
+        for _taxes, lines_iter in groupby(product_lines, key=lambda line: line.tax_ids):
+            lines = sum(lines_iter, start=self.env["account.move.line"])
+            subtotal = self._kai_exact_monetary_sum(lines.mapped("price_subtotal"))
+            tax_labels = [tax.tax_label for tax in lines.tax_ids if tax.tax_label]
+            if self.currency_id.is_zero(subtotal) and not tax_labels:
+                continue
+            result.append({
+                "name": self.name,
+                "taxes": tax_labels,
+                "price_subtotal": subtotal,
+                "price_total": subtotal,
+                "display_type": "product",
+                "quantity": 1,
+                "line_uom": False,
+                "product_uom": False,
+                "discount": 0.0,
+            })
+        return result or [{
+            "name": self.name,
+            "taxes": [],
+            "price_subtotal": 0.0,
+            "price_total": 0.0,
+            "display_type": "product",
+            "quantity": 0,
+            "line_uom": False,
+            "product_uom": False,
+            "discount": 0.0,
+        }]
 
     def _kai_qty_for_sale_line(self, sale_line):
         """Cantidad de esta línea de factura imputable a una línea de venta.
