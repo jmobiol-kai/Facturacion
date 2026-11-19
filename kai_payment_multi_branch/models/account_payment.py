@@ -217,23 +217,10 @@ class AccountPayment(models.Model):
                 raise UserError(_("You can't create payments for entries belonging to different companies."))
             if payment.is_internal_transfer:
                 raise UserError(_("Una transferencia interna no puede cancelar deuda de otra sucursal."))
-            if payment.payment_method_code in CHECK_PAYMENT_CODES:
-                raise UserError(
-                    _(
-                        "Los cheques no están soportados cuando el pago cancela deuda de otra sucursal. "
-                        "Usá un método de pago manual o registrá un pago por sucursal."
-                    )
-                )
-            if payment._kai_has_withholdings():
-                raise UserError(
-                    _(
-                        "Las retenciones no están soportadas cuando el pago cancela deuda de otra sucursal. "
-                        "Confirmá el pago sin retenciones o registrá un pago por sucursal. "
-                        "Un ajuste de account_payment_pro (write-off) sí se admite si el "
-                        "importe a cancelar coincide con la deuda seleccionada: queda en la "
-                        "compañía del pago."
-                    )
-                )
+            # Cheques propios y retenciones se admiten en el pago nuevo: la
+            # retención queda en la compañía que paga y cada sucursal recibe
+            # el bruto de su deuda. La regularización de pagos viejos sigue
+            # rechazándolos en _kai_regularize_block_reason.
             if payment.currency_id != payment.company_currency_id:
                 raise UserError(
                     _(
