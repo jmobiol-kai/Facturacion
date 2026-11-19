@@ -6,7 +6,7 @@ Módulos Odoo de facturación (rama `19.0`). Este repositorio es una carpeta de 
 
 - `kai_purchase_bill_by_order`: Factura de proveedor con un renglón por orden de compra en lugar del detalle de productos (asistente Crear facturas de proveedor y ajuste en Compras).
 
-- `kai_sale_invoice_by_order`: Factura un renglón por orden de venta en lugar del detalle de productos (opción en el asistente Crear facturas y ajuste en Ventas).
+- `kai_sale_invoice_by_order`: al facturar pedidos de venta, el asistente permite una línea por producto (cantidades sumadas si coinciden precio, descuento, impuestos, unidad, cuenta y analítica), un renglón por orden de venta, o el detalle sin consolidar. El ajuste de la compañía sigue siendo el valor por defecto del asistente (renglón por pedido).
 
 - `msb_default_tax_and_account`: en el diario de venta o de compra, usa la cuenta por defecto del diario en las líneas de factura y reemplaza impuestos según el mapeo del diario (impuesto original → reemplazo). Depende de `account`, `sale` y `purchase`.
 
