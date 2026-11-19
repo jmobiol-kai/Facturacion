@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.kai.payment.multi.branch</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="account.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//block[@id='default_accounts']" position="after">
+                <block title="Pagos multi-sucursal" id="kai_payment_multi_branch">
+                    <setting id="kai_branch_current_account_setting"
+                             string="Cuenta corriente con sucursales"
+                             company_dependent="1"
+                             help="La usa esta compañía en el pago o recibo cuando cancela facturas de otras sucursales de la misma entidad legal.">
+                        <field name="kai_branch_current_account_id"/>
+                    </setting>
+                    <setting id="kai_central_current_account_setting"
+                             string="Cuenta corriente con casa central"
+                             company_dependent="1"
+                             help="La usa esta compañía en el asiento puente cuando otra sucursal de la entidad legal le cancela deuda.">
+                        <field name="kai_central_current_account_id"/>
+                    </setting>
+                    <setting id="kai_bridge_journal_setting"
+                             string="Diario de asientos puente"
+                             company_dependent="1"
+                             help="Diario de la reclasificación y de los asientos puente. Si queda vacío, se usa el de operaciones misceláneas (MISC o MISCE), no el de punto de venta.">
+                        <field name="kai_bridge_journal_id"/>
+                    </setting>
+                </block>
+            </xpath>
+        </field>
+    </record>
+</odoo>
