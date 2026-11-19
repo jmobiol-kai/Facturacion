@@ -16,13 +16,15 @@ corrientes se netean en el consolidado.
 Los pagos ya publicados sin ese puente se corrigen con la acción
 «Regularizar pago existente».
 
-Depende de account_payment_pro. No envía correos ni trámites de AFIP.
+Depende de account_payment_pro, l10n_ar_tax y l10n_latam_check_ux para que
+el reparto entre sucursales corra después del ajuste de retenciones y de
+las líneas de cheques. No envía correos ni trámites de AFIP.
 """,
-    "version": "19.0.1.1.3",
+    "version": "19.0.1.2.1",
     "category": "Accounting/Accounting",
     "author": "Kaizendo",
     "license": "LGPL-3",
-    "depends": ["account_payment_pro"],
+    "depends": ["account_payment_pro", "l10n_ar_tax", "l10n_latam_check_ux"],
     "data": [
         "security/ir.model.access.csv",
         "security/account_move_line_security.xml",
