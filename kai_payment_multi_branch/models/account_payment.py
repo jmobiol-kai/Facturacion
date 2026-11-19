@@ -508,16 +508,64 @@ class AccountPayment(models.Model):
         )
         if len(counterpart) != 1:
             return
-        debt = self.to_pay_move_line_ids.filtered(
+        debt = self._kai_lines_to_pay().filtered(
             lambda line: not line.reconciled
             and line.company_id == self.company_id
             and line.account_id == counterpart.account_id
         )
         if not debt:
             return
-        debt = self._get_debt_lines_covered(counterpart, debt)
+        debt = self._kai_debt_lines_covered(counterpart, debt)
         if debt:
             (counterpart + debt).reconcile()
+
+    def _kai_lines_to_pay(self):
+        """Líneas que el pago se propone cancelar.
+
+        account_payment_pro en el commit desplegado 766c676 las guarda en
+        ``to_pay_move_line_ids``. Si una revisión las renombra, se usa el
+        primer campo equivalente que exista.
+        """
+        self.ensure_one()
+        for name in ("to_pay_move_line_ids", "debt_move_line_ids"):
+            if name in self._fields:
+                return self[name]
+        return self.env["account.move.line"]
+
+    def _kai_debt_lines_covered(self, counterpart, debt):
+        """Deuda que el apunte del pago realmente puede conciliar.
+
+        ``account_payment_pro`` reciente lo resuelve en ``_get_debt_lines_covered``.
+        Esa revisión de producción no tiene el método y conciliaba
+        ``to_pay_move_line_ids`` directo: el mismo plan de conciliación, en el
+        mismo orden y por los mismos importes, sin depender de que el método exista.
+        """
+        self.ensure_one()
+        if any("_get_debt_lines_covered" in cls.__dict__ for cls in type(self).mro()):
+            return self._get_debt_lines_covered(counterpart, debt)
+        amls = (counterpart + debt).with_context(
+            no_exchange_difference=self.env.context.get("no_exchange_difference")
+            or bool(
+                self.env["ir.config_parameter"].sudo().get_param("account.disable_partial_exchange_diff")
+            )
+        )
+        plan_list, all_amls = amls._optimize_reconciliation_plan([amls])
+        values_map = {
+            aml: {
+                "aml": aml,
+                "amount_residual": aml.amount_residual,
+                "amount_residual_currency": aml.amount_residual_currency,
+            }
+            for aml in all_amls
+        }
+        matched_ids = set()
+        for plan in plan_list:
+            for result in amls._prepare_reconciliation_plan(plan, values_map):
+                partial = result.get("partial_values") or {}
+                matched_ids.add(partial.get("debit_move_id"))
+                matched_ids.add(partial.get("credit_move_id"))
+        # ``filtered`` conserva el orden de ``debt``, que es el de to_pay_move_line_ids.
+        return debt.filtered(lambda line: line.id in matched_ids)
 
     def _kai_create_bridge_moves(self):
         for payment in self:

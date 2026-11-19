@@ -236,6 +236,127 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         ]
         return payment
 
+    def _check_bank(self):
+        bank = self.env["res.bank"].search([("name", "=", "Banco cheques test")], limit=1)
+        if not bank:
+            bank = self.env["res.bank"].create({"name": "Banco cheques test"})
+        return bank
+
+    def _method_line(self, journal, code):
+        lines = journal.inbound_payment_method_line_ids | journal.outbound_payment_method_line_ids
+        return lines.filtered(lambda line: line.code == code)[:1]
+
+    def _portfolio_journal(self):
+        """Cartera de la casa central: recibe cheques de terceros y los endosa."""
+        journal = getattr(self, "checks_journal", self.env["account.journal"])
+        if journal:
+            return journal
+        account = self.env["account.account"].create({
+            "name": "Cheques de terceros en cartera",
+            "code": "11130001",
+            "account_type": "asset_current",
+            "reconcile": True,
+            "company_ids": [Command.set(self.company.ids)],
+        })
+        self.third_party_account = account
+        journal = self.env["account.journal"].create({
+            "name": "Cartera cheques de terceros",
+            "code": "CH3",
+            "type": "cash",
+            "company_id": self.company.id,
+        })
+        specs = (
+            ("new_third_party_checks", "inbound", "Nuevo cheque de terceros"),
+            ("in_third_party_checks", "inbound", "Cheque de terceros en cartera"),
+            ("out_third_party_checks", "outbound", "Endoso de cheque de terceros"),
+        )
+        for code, payment_type, label in specs:
+            method = self.env["account.payment.method"].search([
+                ("code", "=", code),
+                ("payment_type", "=", payment_type),
+            ], limit=1)
+            self.assertTrue(method, code)
+            field = (
+                "inbound_payment_method_line_ids"
+                if payment_type == "inbound"
+                else "outbound_payment_method_line_ids"
+            )
+            journal.write({
+                field: [Command.create({
+                    "name": label,
+                    "payment_method_id": method.id,
+                    "payment_account_id": account.id,
+                })],
+            })
+        self.checks_journal = journal
+        return journal
+
+    def _receive_customer_checks(self, checks):
+        """El cliente entrega cheques nuevos en la casa central y quedan en cartera.
+
+        El alta del cheque es ``new_third_party_checks``: ``in_third_party_checks``
+        mueve cheques que ya existen. El diario igual tiene ese método, que es
+        el de la cartera.
+        """
+        journal = self._portfolio_journal()
+        self.assertTrue(self._method_line(journal, "in_third_party_checks"))
+        total = sum(amount for _due, amount, _number in checks)
+        invoice = self._invoice(self.company, "out_invoice", self.customer, total)
+        payment = self.env["account.payment"].with_company(self.company).create({
+            "payment_type": "inbound",
+            "partner_type": "customer",
+            "partner_id": self.customer.id,
+            "amount": total,
+            "currency_id": self.company.currency_id.id,
+            "journal_id": journal.id,
+            "company_id": self.company.id,
+            "payment_method_line_id": self._method_line(journal, "new_third_party_checks").id,
+            "l10n_latam_new_check_ids": [
+                Command.create({
+                    "name": number,
+                    "payment_date": due,
+                    "amount": amount,
+                    "bank_id": self._check_bank().id,
+                })
+                for due, amount, number in checks
+            ],
+        })
+        payment.to_pay_move_line_ids = [Command.set(self._debt_lines(invoice).ids)]
+        payment.action_post()
+        received = payment.l10n_latam_new_check_ids
+        received.invalidate_recordset()
+        self.assertEqual(set(received.mapped("current_journal_id").ids), {journal.id})
+        self._assert_move_balanced(payment.move_id)
+        return received
+
+    def _endorse_checks(self, payment, checks):
+        journal = checks.current_journal_id
+        self.assertEqual(len(journal), 1)
+        payment.journal_id = journal
+        payment.payment_method_line_id = self._method_line(journal, "out_third_party_checks")
+        payment.l10n_latam_move_check_ids = [Command.set(checks.ids)]
+        return payment
+
+    def _assert_third_party_credited(self, payment, checks):
+        account = self.third_party_account
+        lines = payment.move_id.line_ids.filtered(lambda line: line.account_id == account)
+        self.assertEqual(len(lines), len(checks))
+        self.assertTrue(all(line.company_id == payment.company_id for line in lines))
+        self.assertAlmostEqual(sum(lines.mapped("balance")), -sum(checks.mapped("amount")), places=2)
+        for check in checks:
+            line = lines.filtered(lambda candidate, check=check: check in candidate.l10n_latam_check_ids)
+            self.assertEqual(len(line), 1)
+            self.assertAlmostEqual(line.balance, -check.amount, places=2)
+            self.assertEqual(line.date_maturity, check.payment_date)
+
+    def _assert_checks_in_hand(self, checks, journal):
+        checks.invalidate_recordset(["current_journal_id"])
+        self.assertEqual(set(checks.mapped("current_journal_id").ids), {journal.id})
+
+    def _assert_checks_endorsed(self, checks):
+        checks.invalidate_recordset(["current_journal_id"])
+        self.assertFalse(any(checks.mapped("current_journal_id")))
+
     def _ensure_withholding_tax(self):
         """Impuesto mínimo de ganancias. No usa el padrón ni la posición fiscal."""
         if self.wth_tax:
@@ -662,6 +783,79 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), 0.0, places=2)
         self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 0.0, places=2)
 
+    def _assert_endorsement_cycle(self, payment, checks, bills, journal):
+        self._assert_checks_endorsed(checks)
+        self._assert_branch_gross(payment, bills)
+        self._assert_third_party_credited(payment, checks)
+
+        payment.action_draft()
+        bills_lines = self._debt_lines(bills)
+        bills_lines.invalidate_recordset()
+        self.assertFalse(payment.kai_bridge_move_ids)
+        self.assertFalse(any(bills_lines.mapped("reconciled")))
+        self._assert_checks_in_hand(checks, journal)
+
+        payment.action_post()
+        self._assert_checks_endorsed(checks)
+        self._assert_branch_gross(payment, bills)
+        self._assert_third_party_credited(payment, checks)
+        self.assertEqual(len(payment.kai_bridge_move_ids), len(bills))
+
+        payment.action_cancel()
+        bills_lines.invalidate_recordset()
+        self.assertEqual(payment.state, "canceled")
+        self.assertFalse(payment.kai_bridge_move_ids)
+        self.assertFalse(any(bills_lines.mapped("reconciled")))
+        self._assert_checks_in_hand(checks, journal)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 0.0, places=2)
+
+    def test_third_party_checks_across_two_branches(self):
+        today = fields.Date.today()
+        checks = self._receive_customer_checks([
+            (today, 70, "00000031"),
+            (today + timedelta(days=20), 60, "00000032"),
+            (today + timedelta(days=40), 50, "00000033"),
+        ])
+        journal = checks.current_journal_id
+        yesterday_bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        fisa_bill = self._invoice(self.fisa, "in_invoice", self.vendor, 80)
+        bills = yesterday_bill | fisa_bill
+        payment = self._payment("supplier", self.vendor, self._debt_lines(bills))
+        self._endorse_checks(payment, checks)
+        self.assertAlmostEqual(payment.amount, 180.0, places=2)
+        payment.action_post()
+
+        self._assert_endorsement_cycle(payment, checks, bills, journal)
+
+    def test_third_party_checks_with_withholding_across_two_branches(self):
+        today = fields.Date.today()
+        yesterday_bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 120)
+        fisa_bill = self._invoice(self.fisa, "in_invoice", self.vendor, 80)
+        bills = yesterday_bill | fisa_bill
+        payment = self._payment("supplier", self.vendor, self._debt_lines(bills))
+        payment.payment_method_line_id = self._manual_method_line()
+        withholding = self._add_withholding(payment)
+        net = payment.company_currency_id.round(200.0 - withholding.amount)
+        first = payment.company_currency_id.round(net * 0.4)
+        second = payment.company_currency_id.round(net - first)
+        checks = self._receive_customer_checks([
+            (today, first, "00000041"),
+            (today + timedelta(days=25), second, "00000042"),
+        ])
+        journal = checks.current_journal_id
+        # Cambiar el método vacía la retención: se vuelve a cargar después.
+        self._endorse_checks(payment, checks)
+        withholding = self._add_withholding(payment)
+        self.assertAlmostEqual(payment.amount, net, places=2)
+        self.assertAlmostEqual(withholding.amount, 200.0 - net, places=2)
+        payment.action_post()
+
+        self._assert_withholding_on_payer(payment, 200.0)
+        self._assert_endorsement_cycle(payment, checks, bills, journal)
+        self.assertFalse(payment.kai_bridge_move_ids.line_ids.filtered(
+            lambda line: line.account_id == self.wth_account
+        ))
+
     def test_single_branch_payment_clears_the_branch_not_the_central_payable(self):
         bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
         lines = self._debt_lines(bill)
@@ -880,6 +1074,44 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         self.assertTrue(payment.currency_id.is_zero(payment.matched_amount))
         self.assertTrue(payment.currency_id.is_zero(payment.unmatched_amount))
         self.assertFalse(lines.kai_settled_by_company_ids)
+
+    def test_mixed_payment_covers_central_debt_without_payment_pro_helper(self):
+        """account_payment_pro 766c676 no tiene ``_get_debt_lines_covered``.
+
+        Un pago que mezcla la casa central y una sucursal igual tiene que
+        conciliar solo la deuda de la central, en el orden y por los importes
+        que cubre el apunte del pago.
+        """
+        central_bill = self._invoice(self.company, "in_invoice", self.vendor, 80)
+        branch_bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 120)
+        lines = self._debt_lines(central_bill | branch_bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        removed = []
+        for model_cls in type(payment).mro():
+            if "_get_debt_lines_covered" in model_cls.__dict__:
+                removed.append((model_cls, model_cls.__dict__["_get_debt_lines_covered"]))
+                delattr(model_cls, "_get_debt_lines_covered")
+        self.assertFalse(any("_get_debt_lines_covered" in cls.__dict__ for cls in type(payment).mro()))
+        try:
+            payment.action_post()
+        finally:
+            for model_cls, method in removed:
+                setattr(model_cls, "_get_debt_lines_covered", method)
+
+        self._assert_reconciled(lines)
+        self.assertEqual(payment.kai_bridge_move_ids.company_id, self.yesterday)
+        payable = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        )
+        self.assertEqual(len(payable), 1)
+        self.assertAlmostEqual(payable.balance, 80.0, places=2)
+        self.assertTrue(self._debt_lines(central_bill).reconciled)
+        central_match = self._debt_lines(central_bill).matched_debit_ids | self._debt_lines(central_bill).matched_credit_ids
+        central_counterparts = (central_match.debit_move_id | central_match.credit_move_id) - self._debt_lines(central_bill)
+        self.assertTrue(central_counterparts)
+        self.assertTrue(all(line.move_id == payment.move_id for line in central_counterparts))
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 0.0, places=2)
 
     def test_paid_tab_mixed_central_and_branch(self):
         central_bill = self._invoice(self.company, "in_invoice", self.vendor, 80)
