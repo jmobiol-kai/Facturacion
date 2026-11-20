@@ -7,8 +7,8 @@
         <field name="arch" type="xml">
             <setting id="sales_settings_invoicing_policy" position="after">
                 <setting id="invoice_by_sale_order_setting"
-                         string="Una línea de factura por pedido"
-                         help="Al crear una factura desde uno o varios pedidos de venta, se agrupa en una sola línea por pedido. Si un pedido combina alícuotas distintas, se genera una línea por pedido e impuesto. Los pedidos quedan marcados como facturados. En el asistente se puede elegir, para esa factura, una línea por producto o el detalle sin consolidar.">
+                         string="Agrupar la factura por pedido de venta"
+                         help="Al crear una factura desde uno o varios pedidos de venta, cada pedido queda como una sección seguida de sus productos. El PDF y el portal muestran un importe por pedido (o uno por alícuota, si combina impuestos). Las líneas de producto conservan cantidad, precio y el vínculo con el pedido, así se genera el costo de ventas al publicar. Los pedidos quedan marcados como facturados. En el asistente se puede elegir, para esa factura, una línea por producto o el detalle sin consolidar.">
                     <field name="invoice_by_sale_order"/>
                 </setting>
             </setting>

@@ -7,8 +7,8 @@
         <field name="arch" type="xml">
             <setting id="three_way_matching" position="after">
                 <setting id="bill_by_purchase_order_setting"
-                         string="Una línea de factura por orden de compra"
-                         help="Al crear una factura de proveedor desde una o varias órdenes de compra, se agrupa en una sola línea por orden. Si una orden combina alícuotas distintas, se genera una línea por orden e impuesto. Las órdenes quedan marcadas como facturadas.">
+                         string="Agrupar la factura de proveedor por orden de compra"
+                         help="Al crear una factura de proveedor desde una o varias órdenes de compra, cada orden queda como una sección seguida de sus productos. El PDF y el portal muestran un importe por orden (o uno por alícuota, si combina impuestos). Las líneas de producto conservan cantidad, precio y el vínculo con la orden, y las órdenes quedan marcadas como facturadas.">
                     <field name="bill_by_purchase_order"/>
                 </setting>
             </setting>

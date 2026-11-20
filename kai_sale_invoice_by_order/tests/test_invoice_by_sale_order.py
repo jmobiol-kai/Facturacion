@@ -36,6 +36,11 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
     def _product_lines(self, moves):
         return moves.invoice_line_ids.filtered(lambda line: line.display_type == "product")
 
+    def _sections(self, moves):
+        return moves.invoice_line_ids.filtered(
+            lambda line: line.display_type == "line_section" and line.kai_invoice_by_order
+        )
+
     def _post(self, moves):
         """Publica sin documentos locales ni web service de AFIP."""
         journals = moves.journal_id
@@ -63,34 +68,46 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         moves = (first | second)._create_invoices()
         self.assertEqual(len(moves), 1)
         invoice = moves
-        product_lines = invoice.invoice_line_ids.filtered(lambda line: line.display_type == "product")
-        self.assertEqual(len(product_lines), 2)
-        by_order = {line.sale_line_ids.order_id: line for line in product_lines}
+        product_lines = self._product_lines(invoice)
+        self.assertEqual(len(product_lines), 3)
+        self.assertEqual(set(product_lines.mapped("product_id")), {product, product2})
+        self.assertTrue(all(product_lines.mapped("product_uom_id")))
+        self.assertFalse(any(product_lines.mapped("kai_invoice_by_order")))
+        self.assertFalse(any(product_lines.mapped("kai_invoice_by_product")))
+        sections = self._sections(invoice)
+        self.assertEqual(len(sections), 2)
+        self.assertTrue(all(sections.mapped("collapse_composition")))
+        by_order = {section.kai_sale_order_id: section for section in sections}
         self.assertEqual(set(by_order), {first, second})
-
-        first_line = by_order[first]
-        second_line = by_order[second]
-        first_date = format_date(self.env, first.date_order)
-        second_date = format_date(self.env, second.date_order)
-        self.assertEqual(
-            first_line.name,
-            f"{first.name} · {first_date} · {first.partner_id.display_name}",
-        )
-        self.assertEqual(
-            second_line.name,
-            f"{second.name} · {second_date} · {second.partner_id.display_name}",
-        )
-        self.assertEqual(first_line.quantity, 1.0)
-        self.assertEqual(second_line.quantity, 1.0)
-        self.assertAlmostEqual(first_line.price_subtotal, first.amount_untaxed, places=1)
-        self.assertAlmostEqual(second_line.price_subtotal, second.amount_untaxed, places=1)
-        self.assertAlmostEqual(first_line.price_total, first.amount_total, places=1)
-        self.assertAlmostEqual(second_line.price_total, second.amount_total, places=1)
-        self.assertAlmostEqual(invoice.amount_total, first.amount_total + second.amount_total, places=1)
-        self.assertEqual(first_line.tax_ids, tax)
-        self.assertEqual(second_line.tax_ids, tax)
-        self.assertTrue(first_line.kai_invoice_by_order)
-        self.assertEqual(set(first_line.sale_line_ids), set(first.order_line.filtered(lambda l: not l.display_type)))
+        for order, section in by_order.items():
+            label_date = format_date(self.env, order.date_order)
+            self.assertEqual(
+                section.name,
+                f"{order.name} · {label_date} · {order.partner_id.display_name}",
+            )
+            order_lines = product_lines.filtered(
+                lambda line: line.sale_line_ids.order_id == order
+            )
+            self.assertTrue(order_lines)
+            self.assertLess(section.sequence, min(order_lines.mapped("sequence")))
+            self.assertEqual(
+                set(order_lines.sale_line_ids),
+                set(order.order_line.filtered(lambda line: not line.display_type)),
+            )
+            for line in order_lines:
+                self.assertEqual(len(line.sale_line_ids), 1)
+                self.assertEqual(line.product_id, line.sale_line_ids.product_id)
+                self.assertEqual(line.product_uom_id, line.sale_line_ids.product_uom_id)
+                self.assertAlmostEqual(line.quantity, line.sale_line_ids.product_uom_qty)
+                self.assertAlmostEqual(line.price_unit, line.sale_line_ids.price_unit)
+                self.assertEqual(line.tax_ids, tax)
+            collapsed = section._get_child_lines()
+            self.assertAlmostEqual(
+                sum(item["price_subtotal"] for item in collapsed), order.amount_untaxed, places=2,
+            )
+        self.assertAlmostEqual(invoice.amount_untaxed, first.amount_untaxed + second.amount_untaxed, places=2)
+        self.assertAlmostEqual(invoice.amount_tax, first.amount_tax + second.amount_tax, places=2)
+        self.assertAlmostEqual(invoice.amount_total, first.amount_total + second.amount_total, places=2)
 
         for line in first.order_line.filtered(lambda l: not l.display_type):
             self.assertAlmostEqual(line.qty_invoiced, line.product_uom_qty)
@@ -115,10 +132,57 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         by_tax = {line.tax_ids: line for line in product_lines}
         self.assertAlmostEqual(by_tax[tax_a].price_subtotal, 100.0, places=1)
         self.assertAlmostEqual(by_tax[tax_b].price_subtotal, 80.0, places=1)
+        self.assertTrue(all(product_lines.mapped("product_id")))
+        sections = self._sections(invoice)
+        self.assertEqual(len(sections), 1)
+        collapsed = sections._get_child_lines()
+        self.assertEqual(sorted(round(item["price_subtotal"], 2) for item in collapsed), [80.0, 100.0])
         self.assertAlmostEqual(sum(product_lines.mapped('price_total')), order.amount_total, places=1)
+        self.assertAlmostEqual(invoice.amount_tax, order.amount_tax, places=2)
         self.assertEqual(order.invoice_status, "invoiced")
         for line in order.order_line.filtered(lambda l: not l.display_type):
             self.assertAlmostEqual(line.qty_invoiced, line.product_uom_qty)
+
+    def test_grouped_section_amount_is_the_exact_subtotal_sum(self):
+        """La sección usa el neto del asiento, no la suma de price_subtotal.
+
+        Con IVA incluido Odoo deja un centavo en amount_currency. La suma de
+        las secciones tiene que ser amount_untaxed, y el total con IVA amount_total.
+        """
+        tax = self.env["account.tax"].create({
+            "name": "IVA 21% incluido ventas kai",
+            "amount": 21.0,
+            "amount_type": "percent",
+            "type_tax_use": "sale",
+            "price_include_override": "tax_included",
+        })
+        product = self.company_data["product_order_no"]
+        first = self._make_order(self.partner_a, [
+            (product, 1, price, tax)
+            for price in (10.10, 20.20, 30.05, 40.07, 50.09, 33.33)
+        ])
+        second = self._make_order(self.partner_a, [
+            (product, 1, 21.53, tax),
+            (product, 1, 21.53, tax),
+        ])
+        orders = first | second
+        invoice = orders._create_invoices()
+        self.assertEqual(len(invoice), 1)
+        sections = self._sections(invoice)
+        self.assertEqual(len(sections), 2)
+        shown_net = 0.0
+        shown_gross = 0.0
+        for section in sections:
+            collapsed = section._get_child_lines()
+            shown_net += sum(item["price_subtotal"] for item in collapsed)
+            shown_gross += sum(item["price_total"] for item in collapsed)
+        self.assertAlmostEqual(shown_net, invoice.amount_untaxed, places=2)
+        self.assertAlmostEqual(shown_gross, invoice.amount_total, places=2)
+        raw_net = sections[:1]._kai_exact_monetary_sum(
+            self._product_lines(invoice).mapped("price_subtotal")
+        )
+        if not invoice.currency_id.is_zero(raw_net - invoice.amount_untaxed):
+            self.assertFalse(invoice.currency_id.is_zero(shown_net - raw_net))
 
     def test_setting_off_keeps_native_lines(self):
         self.env.company.invoice_by_sale_order = False
@@ -130,7 +194,9 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         invoice = order._create_invoices()
         product_lines = invoice.invoice_line_ids.filtered(lambda line: line.display_type == "product")
         self.assertEqual(len(product_lines), 2)
+        self.assertTrue(all(product_lines.mapped("product_id")))
         self.assertFalse(any(product_lines.mapped("kai_invoice_by_order")))
+        self.assertFalse(self._sections(invoice))
         self.assertEqual(order.invoice_status, "invoiced")
 
     def _wizard(self, orders, line_mode, consolidated=True):
@@ -171,8 +237,15 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         invoices = self._wizard(orders, "by_order", consolidated=True)._create_invoices(orders)
         self.assertEqual(len(invoices), 1)
         lines = invoices.invoice_line_ids.filtered(lambda line: line.display_type == "product")
-        self.assertEqual(len(lines), 2)
-        self.assertTrue(all(lines.mapped("kai_invoice_by_order")))
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(all(lines.mapped("product_id")))
+        self.assertFalse(any(lines.mapped("kai_invoice_by_order")))
+        self.assertFalse(any(lines.mapped("kai_invoice_by_product")))
+        sections = self._sections(invoices)
+        self.assertEqual(len(sections), 2)
+        self.assertTrue(all(sections.mapped("collapse_composition")))
+        self.assertAlmostEqual(invoices.amount_untaxed, first.amount_untaxed + second.amount_untaxed, places=1)
+        self.assertAlmostEqual(invoices.amount_tax, first.amount_tax + second.amount_tax, places=1)
         self.assertAlmostEqual(invoices.amount_total, first.amount_total + second.amount_total, places=1)
         self.assertEqual(first.invoice_status, "invoiced")
         self.assertEqual(second.invoice_status, "invoiced")
@@ -184,6 +257,7 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         self.assertEqual(len(lines), 3)
         self.assertFalse(any(lines.mapped("kai_invoice_by_order")))
         self.assertFalse(any(lines.mapped("kai_invoice_by_product")))
+        self.assertFalse(self._sections(invoices))
         self.assertAlmostEqual(invoices.amount_total, first.amount_total + second.amount_total, places=1)
         self.assertEqual(first.invoice_status, "invoiced")
         invoices.unlink()
@@ -208,7 +282,13 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         for invoice, order in zip(invoices.sorted("id"), (first | second).sorted("id")):
             lines = invoice.invoice_line_ids.filtered(lambda line: line.display_type == "product")
             self.assertEqual(len(lines), 1)
-            self.assertTrue(lines.kai_invoice_by_order)
+            self.assertEqual(lines.product_id, product)
+            self.assertFalse(lines.kai_invoice_by_order)
+            self.assertEqual(lines.sale_line_ids, order.order_line)
+            section = self._sections(invoice)
+            self.assertEqual(len(section), 1)
+            self.assertTrue(section.collapse_composition)
+            self.assertEqual(section.kai_sale_order_id, order)
             self.assertAlmostEqual(lines.price_total, order.amount_total, places=1)
             self.assertEqual(order.invoice_status, "invoiced")
 
@@ -471,10 +551,12 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
 
         by_order = orders._create_invoices()
         by_order_lines = self._product_lines(by_order)
-        self.assertEqual(len(by_order_lines), 2)
-        self.assertTrue(all(by_order_lines.mapped("kai_invoice_by_order")))
+        self.assertEqual(len(by_order_lines), 3)
+        self.assertFalse(any(by_order_lines.mapped("kai_invoice_by_order")))
         self.assertFalse(any(by_order_lines.mapped("kai_invoice_by_product")))
-        self.assertFalse(any(by_order_lines.mapped("product_id")))
+        self.assertEqual(set(by_order_lines.mapped("product_id")), {product})
+        self.assertEqual(len(self._sections(by_order)), 2)
+        self.assertAlmostEqual(by_order.amount_total, first.amount_total + second.amount_total, places=2)
         by_order.unlink()
 
         native = self._wizard(orders, "native")._create_invoices(orders)
@@ -718,6 +800,119 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         cogs = invoice.line_ids.filtered(lambda move_line: move_line.display_type == "cogs")
         self.assertTrue(cogs)
         self.assertEqual(set(cogs.product_id), {product})
+        expense_debit = sum(cogs.filtered(lambda move_line: move_line.account_id == expense).mapped("debit"))
+        stock_credit = sum(cogs.filtered(lambda move_line: move_line.account_id == stock_account).mapped("credit"))
+        self.assertAlmostEqual(expense_debit, 58.0, places=2)
+        self.assertAlmostEqual(stock_credit, 58.0, places=2)
+
+    def test_grouped_by_order_posts_fifo_cogs(self):
+        """Dos pedidos agrupados conservan el producto y, al publicar, generan el CMV.
+
+        En Odoo 19 el asiento de costo debita el gasto y acredita la cuenta de
+        valuación (el stock output del esquema anterior). El importe es el de
+        las entregas FIFO, y los totales de la factura siguen siendo los de los
+        pedidos.
+        """
+        installed = self.env["ir.module.module"].sudo().search_count([
+            ("name", "in", ("stock_account", "sale_stock")),
+            ("state", "=", "installed"),
+        ])
+        if installed < 2:
+            self.skipTest("Hace falta stock_account y sale_stock para el costo de ventas.")
+        company = self.env.company
+        warehouse = self.env["stock.warehouse"].search([("company_id", "=", company.id)], limit=1)
+        if not warehouse:
+            self.skipTest("La compañía de prueba no tiene almacén.")
+        expense = self.company_data["default_account_expense"]
+        income = self.company_data["default_account_revenue"]
+        stock_account = self.env["account.account"].create({
+            "name": "Valuación stock por pedido",
+            "code": "KAISTKORD",
+            "account_type": "asset_current",
+            "reconcile": True,
+            "company_ids": [Command.set([company.id])],
+        })
+        category = self.env["product.category"].with_company(company).create({
+            "name": "FIFO por pedido kai",
+            "property_valuation": "real_time",
+            "property_cost_method": "fifo",
+            "property_stock_valuation_account_id": stock_account.id,
+            "property_account_income_categ_id": income.id,
+            "property_account_expense_categ_id": expense.id,
+        })
+        product = self._medialuna(
+            name="Medialuna por pedido",
+            is_storable=True,
+            invoice_policy="delivery",
+            categ_id=category.id,
+            standard_price=8.0,
+            taxes_id=[Command.clear()],
+        )
+        supplier = self.env.ref("stock.stock_location_suppliers")
+
+        def receive(qty, cost):
+            move = self.env["stock.move"].create({
+                "product_id": product.id,
+                "location_id": supplier.id,
+                "location_dest_id": warehouse.lot_stock_id.id,
+                "product_uom": product.uom_id.id,
+                "product_uom_qty": qty,
+                "picking_type_id": warehouse.in_type_id.id,
+                "value_manual": cost * qty,
+                "price_unit": cost,
+            })
+            move._action_confirm()
+            move._action_assign()
+            move.picked = True
+            move._action_done()
+
+        receive(2, 8.0)
+        receive(3, 14.0)
+        tax = self.tax_sale_a
+        first = self._make_order(self.partner_a, [(product, 2, 100.0, tax)])
+        second = self._make_order(self.partner_a, [(product, 3, 100.0, tax)])
+        orders = first | second
+        pickings = orders.picking_ids.filtered(lambda picking: picking.state not in ("done", "cancel"))
+        for picking in pickings:
+            picking.action_assign()
+            for move in picking.move_ids:
+                move.quantity = move.product_uom_qty
+                move.picked = True
+            result = picking.button_validate()
+            if isinstance(result, dict):
+                wizard = self.env[result["res_model"]].with_context(result.get("context") or {}).create({})
+                wizard.process()
+        delivered = orders.picking_ids.move_ids.filtered(lambda move: move.state == "done")
+        self.assertAlmostEqual(sum(delivered.mapped("value")), 58.0, places=2)
+
+        invoice = self._wizard(orders, "by_order")._create_invoices(orders)
+        self.assertEqual(len(invoice), 1)
+        lines = self._product_lines(invoice)
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(set(lines.mapped("product_id")), {product})
+        self.assertFalse(any(lines.mapped("kai_invoice_by_order")))
+        self.assertEqual(set(lines.sale_line_ids), set(self._sale_product_lines(orders)))
+        for line in lines:
+            self.assertEqual(line.product_uom_id, product.uom_id)
+            self.assertAlmostEqual(line.quantity, line.sale_line_ids.product_uom_qty)
+            self.assertAlmostEqual(line.price_unit, line.sale_line_ids.price_unit)
+        sections = self._sections(invoice)
+        self.assertEqual(set(sections.mapped("kai_sale_order_id")), set(orders))
+        for section in sections:
+            collapsed = section._get_child_lines()
+            self.assertAlmostEqual(
+                sum(item["price_subtotal"] for item in collapsed),
+                section.kai_sale_order_id.amount_untaxed,
+                places=2,
+            )
+        self.assertAlmostEqual(invoice.amount_untaxed, first.amount_untaxed + second.amount_untaxed, places=2)
+        self.assertAlmostEqual(invoice.amount_tax, first.amount_tax + second.amount_tax, places=2)
+        self.assertAlmostEqual(invoice.amount_total, first.amount_total + second.amount_total, places=2)
+
+        self._post(invoice)
+        cogs = invoice.line_ids.filtered(lambda move_line: move_line.display_type == "cogs")
+        self.assertTrue(cogs)
+        self.assertEqual(set(cogs.mapped("product_id")), {product})
         expense_debit = sum(cogs.filtered(lambda move_line: move_line.account_id == expense).mapped("debit"))
         stock_credit = sum(cogs.filtered(lambda move_line: move_line.account_id == stock_account).mapped("credit"))
         self.assertAlmostEqual(expense_debit, 58.0, places=2)
