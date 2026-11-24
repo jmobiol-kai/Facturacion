@@ -31,131 +31,98 @@ class AccountMove(models.Model):
                 move._kai_do_consolidate_by_product()
 
 
-    def _kai_price_unit_for_group(self, group):
-        """Respecta precios con IVA incluido (típico en l10n_ar / Factura B o C)."""
-        included = any(group.tax_ids.mapped("price_include"))
-        if not included and hasattr(self, "_l10n_ar_include_vat"):
-            included = bool(self._l10n_ar_include_vat())
-        field = "price_total" if included else "price_subtotal"
-        return sum(group.mapped(field))
+    def _kai_sale_order_section_name(self, order):
+        self.ensure_one()
+        return _("%s · %s · %s") % (
+            order.name,
+            format_date(self.env, order.date_order),
+            order.partner_id.display_name or order.partner_id.name or "",
+        )
 
     def _kai_do_consolidate_by_sale_order(self):
+        """Una sección por pedido, con los renglones de producto intactos.
+
+        El PDF y el portal usan collapse_composition y muestran el subtotal de
+        la sección. Cada línea conserva product_id, cantidad, unidad, precio y
+        sale_line_ids para que el costo de ventas (CMV) se genere al publicar.
+        Consolidar el mismo producto queda solo en el modo «una línea por
+        producto». No se reescriben facturas ya publicadas.
+        """
         self.ensure_one()
-        lines = self.invoice_line_ids.filtered(
-            lambda line: line.display_type == "product"
-            and line.sale_line_ids
+        candidates = self.invoice_line_ids.filtered(
+            lambda line: line.display_type in (
+                "product", "line_section", "line_subsection", "line_note",
+            )
             and not line.kai_invoice_by_order
             and not line.kai_invoice_by_product
+            and not line.is_downpayment
+            and len(line.sale_line_ids.order_id) == 1
         )
-        if not lines:
+        done_orders = self.invoice_line_ids.filtered(
+            lambda line: line.display_type == "line_section" and line.kai_sale_order_id
+        ).kai_sale_order_id
+        candidates = candidates.filtered(
+            lambda line: line.sale_line_ids.order_id not in done_orders
+        )
+        if not candidates:
             return
 
-        groups = {}
-        for line in lines:
-            order = line.sale_line_ids.order_id[:1]
-            if not order:
-                continue
-            key = (order.id, tuple(sorted(line.tax_ids.ids)), line.account_id.id)
-            groups.setdefault(key, self.env["account.move.line"])
-            groups[key] |= line
-
-        if not groups:
-            return
-
-        def group_sort_key(item):
-            _key, group_lines = item
-            order = group_lines.sudo().sale_line_ids.order_id[:1]
-            first = group_lines[:1]
-            return (
-                order.date_order,
-                order.name or "",
-                first.sequence,
-                first.id,
+        grouped = {}
+        for line in candidates:
+            order = line.sale_line_ids.order_id
+            grouped.setdefault(order, self.env["account.move.line"])
+            grouped[order] |= line
+        orders = self.env["sale.order"].browse([order.id for order in grouped]).sorted(
+            lambda order: (order.date_order, order.name or "", order.id)
+        )
+        grouped_lines = self.env["account.move.line"].concat(*grouped.values())
+        # Anticipos y renglones sueltos van antes de la primera sección para no
+        # quedar como hijos de la última (parent_id sigue la secuencia).
+        others = self.invoice_line_ids.filtered(
+            lambda line: line not in grouped_lines
+            and not line.kai_sale_order_id
+            and line.display_type in (
+                "product", "line_section", "line_subsection", "line_note",
             )
+        )
 
-        create_vals = []
-        to_remove = self.env["account.move.line"]
-        sequence = min(lines.mapped("sequence") or [1])
-        for (_order_id, tax_key, account_id), group in sorted(
-            groups.items(), key=group_sort_key
-        ):
-            order = group.sudo().sale_line_ids.order_id[:1]
-            qty_map = {}
-            amount_map = {}
-            for aml in group:
-                sols = aml.sale_line_ids
-                if not sols:
-                    continue
-                if len(sols) == 1:
-                    sol = sols
-                    qty = aml.quantity
-                    if aml.product_uom_id and sol.product_uom_id:
-                        qty = aml.product_uom_id._compute_quantity(
-                            aml.quantity, sol.product_uom_id, round=False
-                        )
-                    qty_map[str(sol.id)] = qty_map.get(str(sol.id), 0.0) + qty
-                    amount_map[str(sol.id)] = amount_map.get(str(sol.id), 0.0) + (
-                        aml.price_subtotal or 0.0
-                    )
-                else:
-                    subtotal = aml.price_subtotal or 0.0
-                    weights = []
-                    for sol in sols:
-                        qty = aml.quantity
-                        if aml.product_uom_id and sol.product_uom_id:
-                            qty = aml.product_uom_id._compute_quantity(
-                                aml.quantity, sol.product_uom_id, round=False
-                            )
-                        weights.append((sol, qty, abs(sol.price_subtotal or 0.0)))
-                    weight_total = sum(weight for _sol, _qty, weight in weights) or len(weights)
-                    for sol, qty, weight in weights:
-                        share = (weight / weight_total) if weight_total else 0.0
-                        qty_map[str(sol.id)] = qty_map.get(str(sol.id), 0.0) + qty
-                        amount_map[str(sol.id)] = amount_map.get(str(sol.id), 0.0) + (
-                            subtotal * share
-                        )
-
-            date_label = format_date(self.env, order.date_order)
-            name = _("%s · %s · %s") % (
-                order.name,
-                date_label,
-                order.partner_id.display_name or order.partner_id.name,
-            )
-            vals = {
+        sequence = 10
+        rewrites = []
+        section_vals = []
+        for line in others.sorted(lambda item: (item.sequence, item.id)):
+            rewrites.append((line, sequence, False))
+            sequence += 10
+        for order in orders:
+            section_vals.append({
                 "move_id": self.id,
-                "display_type": "product",
-                "name": name,
-                "product_id": False,
-                "product_uom_id": group.product_uom_id[:1].id,
-                "quantity": 1.0,
-                "discount": 0.0,
-                "price_unit": self._kai_price_unit_for_group(group),
-                "tax_ids": [Command.set(list(tax_key))],
-                "account_id": account_id,
-                "sale_line_ids": [Command.set(group.sale_line_ids.ids)],
-                "kai_invoice_by_order": True,
-                "kai_invoice_by_order_qty_map": qty_map,
-                "kai_invoice_by_order_amount_map": amount_map,
+                "display_type": "line_section",
+                "name": self._kai_sale_order_section_name(order),
                 "sequence": sequence,
-                "currency_id": self.currency_id.id,
-            }
-            distributions = [dist for dist in group.mapped("analytic_distribution") if dist]
-            unique = {str(dist) for dist in distributions}
-            if len(unique) == 1:
-                vals["analytic_distribution"] = distributions[0]
-            create_vals.append(vals)
-            to_remove |= group
-            sequence += 1
+                "collapse_composition": True,
+                "kai_invoice_by_order": True,
+                "kai_sale_order_id": order.id,
+            })
+            sequence += 10
+            for line in grouped[order].sorted(lambda item: (item.sequence, item.id)):
+                rewrites.append((line, sequence, line.display_type == "line_section"))
+                sequence += 10
 
-        if not create_vals:
-            return
-
-        to_remove.with_context(
-            check_move_validity=False, skip_invoice_sync=True
-        ).unlink()
-        self.env["account.move.line"].with_context(check_move_validity=False).create(
-            create_vals
-        )
+        context = {"check_move_validity": False, "skip_invoice_sync": True}
+        sections = self.env["account.move.line"]
+        if section_vals:
+            sections = self.env["account.move.line"].with_context(**context).create(section_vals)
+        # _compute_sequence depende de display_type y, al crear la sección o al
+        # volverla subsección, la deja en 100. La secuencia definitiva se escribe
+        # después, cuando ese cómputo ya no corre.
+        for line, _sequence, becomes_subsection in rewrites:
+            if becomes_subsection:
+                line.with_context(**context).write({"display_type": "line_subsection"})
+        for section, vals in zip(sections, section_vals):
+            if section.sequence != vals["sequence"]:
+                section.with_context(**context).write({"sequence": vals["sequence"]})
+        for line, line_sequence, _becomes_subsection in rewrites:
+            if line.sequence != line_sequence:
+                line.with_context(**context).write({"sequence": line_sequence})
 
     def _kai_product_group_key(self, line):
         """Clave que no debe mezclar importes distintos del mismo producto."""

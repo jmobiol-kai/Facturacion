@@ -19,9 +19,11 @@ class PurchaseBillWizard(models.TransientModel):
         string="Renglones de factura",
         required=True,
         default=lambda self: "by_order" if self.env.company.bill_by_purchase_order else "products",
-        help="Detalle de productos deja una línea por producto, como en la orden. "
-             "Un renglón por orden de compra agrupa cada orden en una sola línea "
-             "(o una por alícuota, si una orden combina impuestos distintos).",
+        help="Detalle de productos deja una línea por producto, como en la orden, "
+             "sin sección. Un renglón por orden de compra antepone una sección con "
+             "la referencia de la orden y mantiene los productos: el PDF muestra "
+             "un importe por orden (o por alícuota) y el asiento conserva el "
+             "producto para la valuación y el costo.",
     )
     consolidate_by_vendor = fields.Boolean(
         string="Una factura por proveedor",
