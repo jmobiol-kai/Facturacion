@@ -138,6 +138,64 @@ class AccountMoveLine(models.Model):
             result[-1]["price_total"] = currency.round(result[-1]["price_total"] + gross_gap)
         return result
 
+    def _kai_sale_line_qty_weights(self):
+        """Pesos (cantidad pedida en la UdM de la factura) de cada línea de venta."""
+        self.ensure_one()
+        weights = []
+        sale_lines = self.sale_line_ids.filtered(lambda line: not line.display_type).sorted("id")
+        for sale_line in sale_lines:
+            qty = sale_line.product_uom_qty or 0.0
+            if (
+                sale_line.product_uom_id
+                and self.product_uom_id
+                and sale_line.product_uom_id != self.product_uom_id
+            ):
+                qty = sale_line.product_uom_id._compute_quantity(
+                    qty, self.product_uom_id, round=False
+                )
+            weights.append((sale_line, qty))
+        return weights
+
+    def _kai_proportional_share(self, sale_line, total):
+        """Reparte un total según la cantidad pedida. El último se queda el resto.
+
+        Se usa la cantidad pedida, no el importe: los acompañamientos en $0
+        (flan, pan, fruta) no podrían prorratearse por precio.
+        """
+        self.ensure_one()
+        weights = self._kai_sale_line_qty_weights()
+        if not weights:
+            return 0.0
+        if len(weights) == 1:
+            return total if weights[0][0] == sale_line else 0.0
+        total_weight = sum(weight for _line, weight in weights)
+        if not total_weight:
+            total_weight = float(len(weights))
+            weights = [(line, 1.0) for line, _weight in weights]
+        remaining = total
+        last_id = weights[-1][0].id
+        for line, weight in weights:
+            share = remaining if line.id == last_id else total * (weight / total_weight)
+            if line.id != last_id:
+                remaining -= share
+            if line == sale_line:
+                return share
+        return 0.0
+
+    def _kai_proportional_qty_for_sale_line(self, sale_line):
+        """Cantidad imputable cuando no hay mapa (facturas históricas agrupadas)."""
+        self.ensure_one()
+        share = self._kai_proportional_share(sale_line, self.quantity or 0.0)
+        if (
+            self.product_uom_id
+            and sale_line.product_uom_id
+            and self.product_uom_id != sale_line.product_uom_id
+        ):
+            share = self.product_uom_id._compute_quantity(
+                share, sale_line.product_uom_id, round=False
+            )
+        return share
+
     def _kai_qty_for_sale_line(self, sale_line):
         """Cantidad de esta línea de factura imputable a una línea de venta.
 
@@ -146,34 +204,43 @@ class AccountMoveLine(models.Model):
         (cantidad de factura 1) queda para comprobantes ya emitidos con el
         renglón único. En la línea por producto el mapa está en la unidad de
         la venta y se escala si la cantidad de la factura cambió.
+
+        Si la línea está vinculada a varias ventas y no hay mapa (facturas
+        hechas antes de instalar el módulo), se prorratea por cantidad pedida.
         """
         self.ensure_one()
         qty_map = self.kai_invoice_by_order_qty_map or {}
-        mapped = qty_map.get(str(sale_line.id), 0.0) or 0.0
-        if not self.kai_invoice_by_product:
-            return mapped
-        return self._kai_scale_mapped_value(mapped, qty_map, self.quantity)
+        if qty_map or self.kai_invoice_by_product or self.kai_invoice_by_order:
+            mapped = qty_map.get(str(sale_line.id), 0.0) or 0.0
+            if not self.kai_invoice_by_product:
+                return mapped
+            return self._kai_scale_mapped_value(mapped, qty_map, self.quantity)
+        return self._kai_proportional_qty_for_sale_line(sale_line)
 
     def _kai_untaxed_for_sale_line(self, sale_line):
         """Importe sin impuestos de esta línea imputable a una línea de venta."""
         self.ensure_one()
         amount_map = self.kai_invoice_by_order_amount_map or {}
-        allocated = amount_map.get(str(sale_line.id), 0.0) or 0.0
-        if not self.kai_invoice_by_product:
-            return allocated
-        return self._kai_scale_mapped_value(
-            allocated, amount_map, self.price_subtotal or 0.0, monetary=True
-        )
+        if amount_map or self.kai_invoice_by_product or self.kai_invoice_by_order:
+            allocated = amount_map.get(str(sale_line.id), 0.0) or 0.0
+            if not self.kai_invoice_by_product:
+                return allocated
+            return self._kai_scale_mapped_value(
+                allocated, amount_map, self.price_subtotal or 0.0, monetary=True
+            )
+        return self._kai_proportional_share(sale_line, self.price_subtotal or 0.0)
 
     def _kai_total_for_sale_line(self, sale_line):
         """Importe con impuestos, prorrateado con el peso del mapa sin impuestos."""
         self.ensure_one()
         amount_map = self.kai_invoice_by_order_amount_map or {}
-        allocated = amount_map.get(str(sale_line.id), 0.0) or 0.0
-        total = sum((value or 0.0) for value in amount_map.values())
-        if not total:
-            return 0.0
-        return (self.price_total or 0.0) * (allocated / total)
+        if amount_map:
+            allocated = amount_map.get(str(sale_line.id), 0.0) or 0.0
+            total = sum((value or 0.0) for value in amount_map.values())
+            if not total:
+                return 0.0
+            return (self.price_total or 0.0) * (allocated / total)
+        return self._kai_proportional_share(sale_line, self.price_total or 0.0)
 
     def _kai_scale_mapped_value(self, value, mapping, current_total, monetary=False):
         """Escala un valor del mapa cuando el total de la línea ya no coincide.
