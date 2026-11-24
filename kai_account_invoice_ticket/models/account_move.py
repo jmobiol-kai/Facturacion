@@ -1,3 +1,5 @@
+import base64
+from io import BytesIO
 from itertools import groupby
 
 from odoo import models
@@ -11,19 +13,30 @@ class AccountMove(models.Model):
     def _kai_ticket_values(self):
         """Datos del ticket, en el orden del recibo del Punto de Venta."""
         self.ensure_one()
-        title, code = self._kai_ticket_title()
+        title, code, has_letter = self._kai_ticket_title()
         partner = self.partner_id
         branch = self._kai_ticket_branch()
         taxes = self._kai_ticket_tax_block()
         afip = self._kai_ticket_afip()
         customer_id_label, customer_id_number = self._kai_ticket_customer_id(partner)
+        origin = (self.invoice_origin or "").strip()
+        reference = (self.ref or "").strip()
+        cashier = (self.invoice_user_id.name or "").split(" ")[0]
         return {
             "title": title,
             "code": code,
+            "logo_style": self._kai_ticket_logo_style(),
             "show_due": bool(
                 self.invoice_date_due and self.invoice_date_due != self.invoice_date
             ),
-            "cashier": self.invoice_user_id.name or False,
+            "origin": origin or False,
+            "show_ref": bool(reference) and reference != origin,
+            "ref": reference or False,
+            "has_letter": has_letter,
+            "issuer_vat_cond": branch["responsibility"] if has_letter else False,
+            "iibb": branch["iibb"] if has_letter else False,
+            "start_date": branch["start_date"] if has_letter else False,
+            "cashier": cashier or False,
             "customer_name": self._kai_ticket_customer_name(partner),
             "customer_address": self._kai_ticket_partner_address(partner),
             "customer_vat_cond": partner.l10n_ar_afip_responsibility_type_id.name or False,
@@ -41,15 +54,9 @@ class AccountMove(models.Model):
             "afip_cae_due": afip["cae_due"],
             "afip_qr": afip["qr"],
             "branch_name": branch["name"],
-            "branch_lines": branch["lines"],
-            "responsibility": branch["responsibility"],
-            "iibb": branch["iibb"],
-            "start_date": branch["start_date"],
+            "branch_address": branch["address"],
             "cuit_label": branch["cuit_label"],
             "cuit_number": branch["cuit_number"],
-            "phone": branch["phone"],
-            "email": branch["email"],
-            "website": branch["website"],
         }
 
     def _kai_ticket_title(self):
@@ -61,12 +68,38 @@ class AccountMove(models.Model):
             code = document.code or False
             if code and str(code).isdigit():
                 code = "%02d" % int(code)
-            return " ".join(part for part in parts if part), code or False
+            title = " ".join(part for part in parts if part)
+            return title, code or False, bool(document.l10n_ar_letter)
         labels = {
             "out_refund": "Nota de crédito",
             "out_receipt": "Recibo",
         }
-        return " ".join(part for part in (labels.get(self.move_type, "Factura"), number) if part), False
+        title = " ".join(part for part in (labels.get(self.move_type, "Factura"), number) if part)
+        return title, False, False
+
+    def _kai_ticket_logo_style(self):
+        """Encaja el logo en 50 mm × 20 mm. wkhtmltopdf ignora max-height y recorta."""
+        logo = self.company_id.logo
+        fallback = "width:auto;max-width:50mm;max-height:20mm;height:auto;"
+        if not logo:
+            return fallback
+        try:
+            from PIL import Image
+            image = Image.open(BytesIO(base64.b64decode(logo)))
+            width, height = image.size
+        except Exception:
+            return fallback
+        if not width or not height:
+            return fallback
+        max_w, max_h = 50.0, 20.0
+        aspect = width / float(height)
+        if aspect >= (max_w / max_h):
+            display_w = max_w
+            display_h = max_w / aspect
+        else:
+            display_h = max_h
+            display_w = max_h * aspect
+        return "width:%.2fmm;height:%.2fmm;" % (display_w, display_h)
 
     def _kai_ticket_customer_name(self, partner):
         if not partner:
@@ -108,11 +141,9 @@ class AccountMove(models.Model):
         if emitter:
             name = emitter.name or self.journal_id.name or company.name
             lines = self._kai_ticket_address_lines(emitter)
-            contact = emitter
         else:
             name = self.journal_id.name or company.name
             lines = self._kai_ticket_address_lines(company.partner_id)
-            contact = company.partner_id
         company_partner = company.partner_id
         vat = company_partner.l10n_ar_vat or self._kai_ticket_compact_vat(company_partner.vat)
         iibb = False
@@ -120,18 +151,16 @@ class AccountMove(models.Model):
             iibb = "Exento"
         elif company.l10n_ar_gross_income_number:
             iibb = company.l10n_ar_gross_income_number
+        address = ", ".join(lines)
         return {
             "name": name or "",
-            "lines": lines,
+            "address": address or False,
             "responsibility": company.l10n_ar_afip_responsibility_type_id.name or False,
             "iibb": iibb,
             "start_date": format_date(self.env, company.l10n_ar_afip_start_date)
             if company.l10n_ar_afip_start_date else False,
             "cuit_label": company.country_id.vat_label or "CUIT",
             "cuit_number": vat or False,
-            "phone": contact.phone or False,
-            "email": contact.email or False,
-            "website": (contact.website or "").replace("https://", "").replace("http://", "") or False,
         }
 
     def _kai_ticket_address_lines(self, partner):
@@ -188,7 +217,6 @@ class AccountMove(models.Model):
         return {
             "kind": "product",
             "qty": "1",
-            "qty_decimal": False,
             "name": (section.name or "").split("\n", 1)[0].strip(),
             "price": self.currency_id.round(amount),
             "show_unit": False,
@@ -196,26 +224,22 @@ class AccountMove(models.Model):
             "uom": "",
             "discount": 0.0,
             "discount_label": False,
-            "price_before_discount": 0.0,
         }
 
     def _kai_ticket_product_row(self, line):
         prices = line._l10n_ar_prices_and_taxes()
-        qty, qty_decimal = self._kai_ticket_qty_parts(line)
         discount = line.discount or 0.0
         unit = prices["price_unit"]
         return {
             "kind": "product",
-            "qty": qty,
-            "qty_decimal": qty_decimal,
+            "qty": self._kai_ticket_format_qty(line.quantity),
             "name": self._kai_ticket_product_name(line),
             "price": self.currency_id.round(prices["price_subtotal"]),
             "show_unit": not float_is_zero(unit, precision_digits=2),
             "price_unit": unit,
             "uom": line.product_uom_id.name or "",
             "discount": discount,
-            "discount_label": formatLang(self.env, discount, digits=2) if discount else False,
-            "price_before_discount": self.currency_id.round(unit * line.quantity) if discount else 0.0,
+            "discount_label": self._kai_ticket_format_qty(discount) if discount else False,
         }
 
     def _kai_ticket_product_name(self, line):
@@ -234,20 +258,31 @@ class AccountMove(models.Model):
             return product_name or custom
         return custom
 
-    def _kai_ticket_qty_parts(self, line):
-        quantity = line.quantity
+    def _kai_ticket_format_qty(self, quantity):
+        """Un solo token: 1, 2 o 0,19. Sin ceros de más ni parte decimal separada."""
         nearest = round(quantity)
         if float_is_zero(quantity - nearest, precision_digits=4):
-            return str(int(nearest)), False
+            return str(int(nearest))
         lang = self.env["res.lang"].search([("code", "=", self.env.lang)], limit=1)
-        point = lang.decimal_point if lang else "."
+        point = (lang.decimal_point if lang else ",") or ","
         formatted = formatLang(self.env, quantity, dp="Product Unit")
         if point in formatted:
-            unit, decimal = formatted.rsplit(point, 1)
-            if set(decimal) <= {"0"}:
-                return unit, False
-            return unit, point + decimal
-        return formatted, False
+            whole, frac = formatted.rsplit(point, 1)
+            frac = frac.rstrip("0")
+            if not frac:
+                return whole
+            return "%s%s%s" % (whole, point, frac)
+        return formatted
+
+    def _kai_ticket_fiscal_label(self, name):
+        """El nombre de l10n_ar ya trae el símbolo. El importe lo pone el widget."""
+        label = (name or "").strip()
+        currency = self.currency_id
+        for token in (currency.symbol, currency.name):
+            token = (token or "").strip()
+            if token and label.endswith(token):
+                label = label[:-len(token)].strip(" :")
+        return label
 
     def _kai_ticket_total_discount(self):
         self.ensure_one()
@@ -313,7 +348,7 @@ class AccountMove(models.Model):
         rows = []
         for detail in self._l10n_ar_get_invoice_custom_tax_summary_for_report() or []:
             rows.append({
-                "name": detail.get("name"),
+                "name": self._kai_ticket_fiscal_label(detail.get("name")),
                 "amount": detail.get("tax_amount_currency"),
             })
         return rows

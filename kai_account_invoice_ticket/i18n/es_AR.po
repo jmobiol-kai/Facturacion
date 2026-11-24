@@ -128,8 +128,13 @@ msgstr "Odoo"
 
 #. module: kai_account_invoice_ticket
 #: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
-msgid "Nota para el cliente"
-msgstr "Nota para el cliente"
+msgid "Nota:"
+msgstr "Nota:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Descuento"
+msgstr "Descuento"
 
 #. module: kai_account_invoice_ticket
 #: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document

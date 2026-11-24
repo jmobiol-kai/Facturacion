@@ -41,19 +41,24 @@
         <t t-set="d" t-value="o._kai_ticket_values()"/>
         <div t-attf-class="article pos-receipt-page {{ '' if ticket_first else 'pos-receipt-break' }}" t-att-data-oe-model="o._name" t-att-data-oe-id="o.id">
             <div class="pos-receipt">
-                <img t-if="o.company_id.logo" t-att-src="image_data_uri(o.company_id.logo)" class="pos-receipt-logo" alt="Logo"/>
+                <div t-if="o.company_id.logo" class="logo-slot">
+                    <img t-att-src="image_data_uri(o.company_id.logo)" t-att-style="d['logo_style']" class="pos-receipt-logo" alt="Logo"/>
+                </div>
 
                 <div class="ticket-meta pos-receipt-center-align">
                     <div class="pos-receipt-vat">
                         <span class="ticket-name-prefix" t-out="d['title']"/>
                     </div>
                     <div t-if="d['code']">Cod. <t t-out="d['code']"/></div>
+                    <div t-if="d['issuer_vat_cond']" class="issuer-extra" t-out="d['issuer_vat_cond']"/>
+                    <div t-if="d['iibb']" class="issuer-extra">IIBB: <t t-out="d['iibb']"/></div>
+                    <div t-if="d['start_date']" class="issuer-extra">Inicio de las actividades: <t t-out="d['start_date']"/></div>
                     <div t-if="o.invoice_date" id="order-date" t-field="o.invoice_date"/>
                     <div t-if="d['show_due']">
                         Fecha de vencimiento: <span t-field="o.invoice_date_due"/>
                     </div>
-                    <div t-if="o.invoice_origin">Origen: <span t-out="o.invoice_origin"/></div>
-                    <div t-if="o.ref">Referencia: <span t-out="o.ref"/></div>
+                    <div t-if="d['origin']">Origen: <span t-out="d['origin']"/></div>
+                    <div t-if="d['show_ref']">Referencia: <span t-out="d['ref']"/></div>
                     <div t-if="d['cashier']" class="cashier">
                         Atendido por: <t t-out="d['cashier']"/>
                     </div>
@@ -74,27 +79,20 @@
                             <span t-out="row['name']"/>
                         </div>
                         <div t-elif="row['kind'] == 'note'" class="customer-note line-note">
-                            <i class="fa fa-sticky-note" role="img" aria-label="Nota para el cliente" title="Nota para el cliente"/>
-                            <span t-out="row['name']"/>
+                            <span>Nota: <t t-out="row['name']"/></span>
                         </div>
                         <div t-else="" class="orderline">
                             <table class="orderline-table">
                                 <tr>
-                                    <td class="qty">
-                                        <span class="fw-bolder" t-out="row['qty']"/>
-                                        <small t-if="row['qty_decimal']" t-out="row['qty_decimal']" class="qty-decimal"/>
-                                    </td>
+                                    <td class="qty"><span t-out="row['qty']"/></td>
                                     <td class="product-name">
                                         <span t-out="row['name']"/>
-                                        <div t-if="row['show_unit']" class="info-list price-per-unit">
+                                        <div t-if="row['show_unit']" class="price-per-unit">
                                             <span t-out="row['price_unit']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
                                             <t t-if="row['uom']"> / <t t-out="row['uom']"/></t>
                                         </div>
-                                        <div t-if="row['discount']" class="info-list price-per-unit">
-                                            <i class="fa fa-tag"/>
-                                            <em><t t-out="row['discount_label']"/>% </em>
-                                            de descuento en
-                                            <span t-out="row['price_before_discount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                                        <div t-if="row['discount']" class="discount-line">
+                                            Descuento <t t-out="row['discount_label']"/>%
                                         </div>
                                     </td>
                                     <td class="product-price font-monospace">
@@ -117,7 +115,6 @@
                         <tr t-foreach="subtotal['groups']" t-as="tax">
                             <td class="label">
                                 <span t-out="tax['name']"/>
-                                <t t-if="tax['label']"> (<t t-out="tax['label']"/>)</t>
                                 <t t-if="not d['same_tax_base']">
                                     en
                                     <span t-out="tax['base']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
@@ -156,7 +153,7 @@
 
                 <div t-if="d['fiscal_summary']" class="fiscal-summary">
                     <div class="fiscal-title">Régimen de Transparencia Fiscal para el Consumidor Final (Ley 27.743)</div>
-                    <table class="pos-totals">
+                    <table class="fiscal-table">
                         <tr t-foreach="d['fiscal_summary']" t-as="detail">
                             <td class="label" t-out="detail['name']"/>
                             <td class="num font-monospace">
@@ -186,18 +183,12 @@
                     <tr>
                         <td class="footer-left">
                             <div class="pos-config-name" t-out="d['branch_name']"/>
-                            <div t-foreach="d['branch_lines']" t-as="line" t-out="line"/>
-                            <div t-if="d['responsibility']" t-out="d['responsibility']"/>
-                            <div t-if="d['iibb']">IIBB: <t t-out="d['iibb']"/></div>
-                            <div t-if="d['start_date']">Inicio de las actividades: <t t-out="d['start_date']"/></div>
+                            <div t-if="d['branch_address']" class="branch-address" t-out="d['branch_address']"/>
                         </td>
                         <td class="footer-right">
                             <div t-if="d['cuit_number']">
                                 <t t-out="d['cuit_label']"/>: <t t-out="d['cuit_number']"/>
                             </div>
-                            <div t-if="d['phone']">Tel.: <span dir="ltr" t-out="d['phone']"/></div>
-                            <div t-if="d['email']" t-out="d['email']"/>
-                            <div t-if="d['website']" t-out="d['website']"/>
                         </td>
                     </tr>
                 </table>
@@ -212,6 +203,8 @@
     <template id="report_invoice_ticket">
         <t t-call="web.html_container">
             <style type="text/css">
+                /* 80 mm a 90 dpi, con el zoom 96/dpi de Odoo: ~270 px útiles.
+                   El recibo impreso del PdV es 14 px sobre 266 px. */
                 body.container, .container, #wrapwrap, main, .article {
                     width: auto !important;
                     max-width: none !important;
@@ -220,127 +213,150 @@
                 }
                 .pos-receipt-break { page-break-before: always; }
                 .pos-receipt {
-                    font-family: "DejaVu Sans", "Noto Sans", sans-serif;
-                    font-size: 13px;
+                    width: 270px;
+                    max-width: 100%;
+                    margin: 0 auto;
+                    font-family: "DejaVu Sans", sans-serif;
+                    font-size: 9pt;
+                    line-height: 1.15;
                     color: #000;
-                    line-height: 1.25;
-                    width: 100%;
+                }
+                .pos-receipt table,
+                .pos-receipt thead,
+                .pos-receipt tbody,
+                .pos-receipt tr,
+                .pos-receipt td,
+                .pos-receipt th {
+                    border: 0 none transparent !important;
+                    border-style: none !important;
+                    border-width: 0 !important;
+                    outline: 0 !important;
+                    background: transparent !important;
+                    box-shadow: none !important;
+                    border-collapse: collapse;
+                    border-spacing: 0;
+                    margin: 0;
+                    padding: 0;
+                }
+                .pos-receipt .logo-slot {
+                    text-align: center;
+                    margin: 0 0 1mm 0;
+                    line-height: 0;
                 }
                 .pos-receipt .pos-receipt-logo {
-                    display: block;
+                    display: inline-block;
                     width: auto;
-                    max-width: 52%;
-                    max-height: 58px;
-                    margin: 0 auto 6px auto;
+                    height: auto;
+                    max-width: 50mm;
+                    max-height: 20mm;
                 }
                 .pos-receipt .pos-receipt-center-align { text-align: center; }
                 .pos-receipt .ticket-meta,
-                .pos-receipt .pos-receipt-contact,
                 .pos-receipt .pos-receipt-customer {
                     text-align: center;
-                    font-size: 11px;
-                    line-height: 1.35;
+                    font-size: 8pt;
+                    line-height: 1.15;
                 }
-                .pos-receipt .pos-receipt-customer { margin-top: 10px; }
-                .pos-receipt .orderlines { margin-top: 14px; }
-                .pos-receipt .orderline { margin-top: 8px; page-break-inside: avoid; }
-                .pos-receipt table.orderline-table {
-                    width: 100%;
-                    border-collapse: collapse;
-                }
+                .pos-receipt .issuer-extra { font-size: 7pt; }
+                .pos-receipt .pos-receipt-customer { margin-top: 2mm; }
+                .pos-receipt .orderlines { margin-top: 2mm; }
+                .pos-receipt .orderline { margin-top: 1mm; page-break-inside: avoid; }
+                .pos-receipt table.orderline-table { width: 100%; }
                 .pos-receipt td.qty {
-                    width: 1.7em;
-                    font-size: 13px;
+                    width: 8mm;
+                    min-width: 8mm;
+                    max-width: 8mm;
+                    font-size: 10pt;
                     font-weight: 700;
                     vertical-align: top;
-                    padding: 0 6px 0 0;
+                    padding: 0 1.5mm 0 0;
                     white-space: nowrap;
                 }
-                .pos-receipt .qty-decimal {
-                    font-weight: 400;
-                    font-size: 85%;
-                }
                 .pos-receipt td.product-name {
-                    font-size: 13px;
+                    font-size: 10pt;
+                    line-height: 1.15;
                     vertical-align: top;
-                    padding-right: 6px;
+                    padding-right: 1.5mm;
                     word-wrap: break-word;
                 }
                 .pos-receipt td.product-price {
-                    width: 1%;
-                    font-size: 12px;
+                    width: 22mm;
+                    font-size: 9pt;
                     vertical-align: top;
                     text-align: right;
                     white-space: nowrap;
-                    font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+                    padding-left: 1.5mm;
+                    font-family: "DejaVu Sans Mono", monospace;
                 }
-                .pos-receipt .info-list,
-                .pos-receipt .price-per-unit {
-                    font-size: 9px;
+                .pos-receipt .price-per-unit,
+                .pos-receipt .discount-line {
+                    font-size: 7pt;
                     font-weight: 400;
-                    line-height: 1.2;
-                    margin-top: 1px;
+                    line-height: 1.15;
+                    white-space: nowrap;
                 }
                 .pos-receipt .customer-note {
-                    margin: 6px 0;
-                    font-size: 11px;
-                    word-wrap: break-word;
+                    margin: 0.6mm 0;
+                    font-size: 8pt;
+                    line-height: 1.15;
                 }
-                .pos-receipt .line-section { font-weight: 700; font-size: 12px; }
+                .pos-receipt .line-section { font-weight: 700; font-size: 9pt; }
                 .pos-receipt .line-note { font-style: italic; }
-                .pos-receipt .line-note .fa { margin-right: 4px; }
-                .pos-receipt table.pos-totals {
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin-top: 12px;
-                }
-                .pos-receipt table.pos-totals td {
-                    font-size: 12px;
-                    padding: 1px 0;
+                .pos-receipt table.pos-totals,
+                .pos-receipt table.fiscal-table,
+                .pos-receipt table.pos-receipt-qr,
+                .pos-receipt table.pos-footer { width: 100%; }
+                .pos-receipt table.pos-totals { margin-top: 2mm; }
+                .pos-receipt table.pos-totals td,
+                .pos-receipt table.fiscal-table td {
+                    font-size: 9pt;
+                    line-height: 1.15;
                     vertical-align: top;
+                    padding: 0.15mm 0;
                 }
-                .pos-receipt table.pos-totals td.num {
-                    width: 1%;
+                .pos-receipt td.num {
+                    width: 28mm;
                     text-align: right;
                     white-space: nowrap;
-                    padding-left: 8px;
-                    font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+                    padding-left: 3mm;
+                    font-family: "DejaVu Sans Mono", monospace;
                 }
                 .pos-receipt tr.receipt-total td { font-weight: 700; }
-                .pos-receipt .fiscal-summary { margin-top: 8px; page-break-inside: avoid; }
+                .pos-receipt .fiscal-summary { margin-top: 1.5mm; page-break-inside: avoid; }
                 .pos-receipt .fiscal-title {
-                    font-size: 9px;
+                    font-size: 7pt;
                     font-weight: 700;
-                    margin-bottom: 2px;
+                    line-height: 1.15;
+                    margin-bottom: 0.4mm;
                 }
-                .pos-receipt table.pos-receipt-qr {
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin-top: 12px;
-                    page-break-inside: avoid;
-                }
-                .pos-receipt .qr-image { width: 92px; vertical-align: top; }
-                .pos-receipt .pos-receipt-qrcode { width: 88px; height: 88px; }
+                .pos-receipt table.fiscal-table td { font-size: 7pt; }
+                .pos-receipt table.pos-receipt-qr { margin-top: 2mm; page-break-inside: avoid; }
+                .pos-receipt .qr-image { width: 22mm; vertical-align: top; }
+                .pos-receipt .pos-receipt-qrcode { width: 20mm; height: 20mm; }
                 .pos-receipt .qr-text {
-                    font-size: 10px;
+                    font-size: 7.5pt;
                     vertical-align: top;
-                    padding-left: 6px;
+                    padding-left: 2mm;
                     word-wrap: break-word;
                 }
-                .pos-receipt .narration { margin-top: 10px; }
-                .pos-receipt table.pos-footer {
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin-top: 14px;
-                    font-size: 10px;
+                .pos-receipt .narration { margin-top: 1.5mm; font-size: 7.5pt; }
+                .pos-receipt table.pos-footer { margin-top: 3mm; font-size: 7.5pt; line-height: 1.15; }
+                .pos-receipt .footer-left {
+                    width: 62%;
+                    vertical-align: top;
+                    text-align: left;
+                    white-space: nowrap;
                 }
-                .pos-receipt .footer-left { width: 58%; vertical-align: top; text-align: left; word-wrap: break-word; }
-                .pos-receipt .footer-right { width: 42%; vertical-align: top; text-align: right; word-wrap: break-word; }
-                .pos-receipt .pos-receipt-order-data { font-size: 10px; }
-                .pos-receipt .footer-powered-by { margin-top: 10px; }
-                .pos-receipt .font-monospace {
-                    font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+                .pos-receipt .footer-right {
+                    width: 38%;
+                    vertical-align: top;
+                    text-align: right;
+                    white-space: nowrap;
+                    padding-left: 2mm;
                 }
+                .pos-receipt .pos-receipt-order-data { font-size: 7.5pt; }
+                .pos-receipt .footer-powered-by { margin-top: 2mm; }
+                .pos-receipt .font-monospace { font-family: "DejaVu Sans Mono", monospace; }
             </style>
             <t t-foreach="docs" t-as="o">
                 <t t-set="lang" t-value="o.partner_id.lang or o.env.lang"/>

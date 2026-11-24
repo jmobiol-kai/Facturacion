@@ -82,7 +82,10 @@ class TestInvoiceTicket(AccountTestInvoicingCommon):
             self.assertTrue(values["title"].startswith("Factura"))
         number = invoice.l10n_latam_document_number or invoice.name
         self.assertIn(number, values["title"])
-        self.assertEqual(values["cashier"], invoice.invoice_user_id.name)
+        self.assertEqual(
+            values["cashier"],
+            (invoice.invoice_user_id.name or "").split(" ")[0],
+        )
         self.assertEqual(values["branch_name"], invoice.journal_id.name)
         product = next(row for row in values["lines"] if row["kind"] == "product")
         self.assertEqual(product["name"], "Agua x 1.5 Lts")
@@ -111,6 +114,25 @@ class TestInvoiceTicket(AccountTestInvoicingCommon):
         self.assertIn("Odoo", html)
         self.assertIn("Sección ticket", html)
         self.assertIn("Nota ticket", html)
+        self.assertIn("Nota:", html)
         self.assertIn("pos-receipt-break", html)
+        self.assertNotIn("fa-sticky-note", html)
+        self.assertNotIn("fa-tag", html)
         self.assertNotIn("¿Necesita factura?", html)
         self.assertNotIn("afip_auth_code", html)
+
+    def test_qty_is_a_single_token_without_trailing_zeros(self):
+        move = self.env["account.move"]
+        self.assertEqual(move._kai_ticket_format_qty(1), "1")
+        self.assertEqual(move._kai_ticket_format_qty(2.0), "2")
+        text = move._kai_ticket_format_qty(0.19)
+        self.assertNotIn(" ", text)
+        self.assertFalse(text.endswith("0"))
+        self.assertTrue(text.startswith("0"))
+
+    def test_fiscal_label_keeps_a_single_currency_symbol(self):
+        invoice = self._customer_invoice(post=False)
+        symbol = invoice.currency_id.symbol or "$"
+        label = invoice._kai_ticket_fiscal_label("IVA Contenido %s" % symbol)
+        self.assertEqual(label, "IVA Contenido")
+        self.assertNotIn(symbol, label)
