@@ -1,0 +1,352 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!--
+        Mismo orden que point_of_sale.OrderReceipt, ReceiptHeader y Orderline
+        (Odoo 19). Las filas van en tablas: el PDF lo arma wkhtmltopdf, que no
+        aplica el flex del recibo en pantalla.
+    -->
+    <record id="paperformat_invoice_ticket_80mm" model="report.paperformat">
+        <field name="name">Ticket factura 80 mm</field>
+        <field name="default" eval="False"/>
+        <field name="format">custom</field>
+        <field name="page_width">80</field>
+        <field name="page_height">297</field>
+        <field name="orientation">Portrait</field>
+        <field name="margin_top">3</field>
+        <field name="margin_bottom">3</field>
+        <field name="margin_left">3</field>
+        <field name="margin_right">3</field>
+        <field name="header_line" eval="False"/>
+        <field name="header_spacing">0</field>
+        <field name="dpi">90</field>
+        <field name="disable_shrinking" eval="True"/>
+    </record>
+
+    <record id="action_report_invoice_ticket" model="ir.actions.report">
+        <field name="name">Imprimir ticket factura</field>
+        <field name="model">account.move</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">kai_account_invoice_ticket.report_invoice_ticket</field>
+        <field name="report_file">kai_account_invoice_ticket.report_invoice_ticket</field>
+        <field name="print_report_name">'%s_ticket' % (object.name or 'Factura')</field>
+        <field name="paperformat_id" ref="paperformat_invoice_ticket_80mm"/>
+        <field name="binding_model_id" ref="account.model_account_move"/>
+        <field name="binding_type">report</field>
+        <field name="domain">[('move_type', 'in', ('out_invoice', 'out_refund', 'out_receipt'))]</field>
+        <field name="is_invoice_report" eval="False"/>
+    </record>
+
+    <template id="report_invoice_ticket_document">
+        <t t-set="o" t-value="o.with_context(lang=lang)"/>
+        <t t-set="d" t-value="o._kai_ticket_values()"/>
+        <div t-attf-class="article pos-receipt-page {{ '' if ticket_first else 'pos-receipt-break' }}" t-att-data-oe-model="o._name" t-att-data-oe-id="o.id">
+            <div class="pos-receipt">
+                <img t-if="o.company_id.logo" t-att-src="image_data_uri(o.company_id.logo)" class="pos-receipt-logo" alt="Logo"/>
+
+                <div class="ticket-meta pos-receipt-center-align">
+                    <div class="pos-receipt-vat">
+                        <span class="ticket-name-prefix" t-out="d['title']"/>
+                    </div>
+                    <div t-if="d['code']">Cod. <t t-out="d['code']"/></div>
+                    <div t-if="o.invoice_date" id="order-date" t-field="o.invoice_date"/>
+                    <div t-if="d['show_due']">
+                        Fecha de vencimiento: <span t-field="o.invoice_date_due"/>
+                    </div>
+                    <div t-if="o.invoice_origin">Origen: <span t-out="o.invoice_origin"/></div>
+                    <div t-if="o.ref">Referencia: <span t-out="o.ref"/></div>
+                    <div t-if="d['cashier']" class="cashier">
+                        Atendido por: <t t-out="d['cashier']"/>
+                    </div>
+                </div>
+
+                <div class="pos-receipt-customer ticket-meta pos-receipt-center-align">
+                    <div t-if="d['customer_name']" t-out="d['customer_name']"/>
+                    <div t-if="d['customer_address']" t-out="d['customer_address']"/>
+                    <div t-if="d['customer_vat_cond']">Cond. IVA: <t t-out="d['customer_vat_cond']"/></div>
+                    <div t-if="d['customer_id_number']">
+                        <t t-out="d['customer_id_label']"/>: <t t-out="d['customer_id_number']"/>
+                    </div>
+                </div>
+
+                <div class="orderlines">
+                    <t t-foreach="d['lines']" t-as="row">
+                        <div t-if="row['kind'] == 'section'" class="customer-note line-section">
+                            <span t-out="row['name']"/>
+                        </div>
+                        <div t-elif="row['kind'] == 'note'" class="customer-note line-note">
+                            <i class="fa fa-sticky-note" role="img" aria-label="Nota para el cliente" title="Nota para el cliente"/>
+                            <span t-out="row['name']"/>
+                        </div>
+                        <div t-else="" class="orderline">
+                            <table class="orderline-table">
+                                <tr>
+                                    <td class="qty">
+                                        <span class="fw-bolder" t-out="row['qty']"/>
+                                        <small t-if="row['qty_decimal']" t-out="row['qty_decimal']" class="qty-decimal"/>
+                                    </td>
+                                    <td class="product-name">
+                                        <span t-out="row['name']"/>
+                                        <div t-if="row['show_unit']" class="info-list price-per-unit">
+                                            <span t-out="row['price_unit']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                                            <t t-if="row['uom']"> / <t t-out="row['uom']"/></t>
+                                        </div>
+                                        <div t-if="row['discount']" class="info-list price-per-unit">
+                                            <i class="fa fa-tag"/>
+                                            <em><t t-out="row['discount_label']"/>% </em>
+                                            de descuento en
+                                            <span t-out="row['price_before_discount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                                        </div>
+                                    </td>
+                                    <td class="product-price font-monospace">
+                                        <span t-out="row['price']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                                    </td>
+                                </tr>
+                            </table>
+                        </div>
+                    </t>
+                </div>
+
+                <table class="pos-totals">
+                    <t t-foreach="d['tax_subtotals']" t-as="subtotal">
+                        <tr>
+                            <td class="label">Subtotal</td>
+                            <td class="num font-monospace">
+                                <span t-out="subtotal['base']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                            </td>
+                        </tr>
+                        <tr t-foreach="subtotal['groups']" t-as="tax">
+                            <td class="label">
+                                <span t-out="tax['name']"/>
+                                <t t-if="tax['label']"> (<t t-out="tax['label']"/>)</t>
+                                <t t-if="not d['same_tax_base']">
+                                    en
+                                    <span t-out="tax['base']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                                </t>
+                            </td>
+                            <td class="num font-monospace">
+                                <span t-out="tax['amount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                            </td>
+                        </tr>
+                    </t>
+                    <tr class="pos-receipt-amount receipt-total">
+                        <td class="label">Total</td>
+                        <td class="num font-monospace">
+                            <span t-out="d['total']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                        </td>
+                    </tr>
+                    <tr t-if="d['rounding'] is not None" class="receipt-rounding">
+                        <td class="label">Redondeo</td>
+                        <td class="num font-monospace">
+                            <span t-out="d['rounding']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                        </td>
+                    </tr>
+                    <tr t-foreach="d['payments']" t-as="pay" class="paymentlines">
+                        <td class="label" t-out="pay['name']"/>
+                        <td class="num font-monospace">
+                            <span t-out="pay['amount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                        </td>
+                    </tr>
+                    <tr t-if="d['discount_total']" class="label-discount">
+                        <td class="label">Descuentos</td>
+                        <td class="num font-monospace">
+                            <span t-out="d['discount_total']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                        </td>
+                    </tr>
+                </table>
+
+                <div t-if="d['fiscal_summary']" class="fiscal-summary">
+                    <div class="fiscal-title">Régimen de Transparencia Fiscal para el Consumidor Final (Ley 27.743)</div>
+                    <table class="pos-totals">
+                        <tr t-foreach="d['fiscal_summary']" t-as="detail">
+                            <td class="label" t-out="detail['name']"/>
+                            <td class="num font-monospace">
+                                <span t-out="detail['amount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                <table t-if="d['afip_qr'] or d['afip_cae'] or d['afip_cae_due']" class="pos-receipt-qr">
+                    <tr>
+                        <td t-if="d['afip_qr']" class="qr-image">
+                            <img t-att-src="'/report/barcode/?barcode_type=QR&amp;value=%s&amp;width=%s&amp;height=%s' % (quote_plus(d['afip_qr']), 180, 180)" class="pos-receipt-qrcode" alt="QR"/>
+                        </td>
+                        <td t-if="d['afip_cae'] or d['afip_cae_due']" class="qr-text">
+                            <div t-if="d['afip_cae']" class="fw-bolder">CAE: <t t-out="d['afip_cae']"/></div>
+                            <div t-if="d['afip_cae_due']">Vencimiento CAE: <span t-out="d['afip_cae_due']" t-options='{"widget": "date"}'/></div>
+                        </td>
+                    </tr>
+                </table>
+
+                <div t-if="not is_html_empty(o.narration)" class="pos-receipt-center-align ticket-meta narration">
+                    <span t-field="o.narration"/>
+                </div>
+
+                <table class="pos-footer">
+                    <tr>
+                        <td class="footer-left">
+                            <div class="pos-config-name" t-out="d['branch_name']"/>
+                            <div t-foreach="d['branch_lines']" t-as="line" t-out="line"/>
+                            <div t-if="d['responsibility']" t-out="d['responsibility']"/>
+                            <div t-if="d['iibb']">IIBB: <t t-out="d['iibb']"/></div>
+                            <div t-if="d['start_date']">Inicio de las actividades: <t t-out="d['start_date']"/></div>
+                        </td>
+                        <td class="footer-right">
+                            <div t-if="d['cuit_number']">
+                                <t t-out="d['cuit_label']"/>: <t t-out="d['cuit_number']"/>
+                            </div>
+                            <div t-if="d['phone']">Tel.: <span dir="ltr" t-out="d['phone']"/></div>
+                            <div t-if="d['email']" t-out="d['email']"/>
+                            <div t-if="d['website']" t-out="d['website']"/>
+                        </td>
+                    </tr>
+                </table>
+
+                <div class="pos-receipt-order-data pos-receipt-center-align footer-powered-by">
+                    <span>Con la tecnología de <b>Odoo</b></span>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template id="report_invoice_ticket">
+        <t t-call="web.html_container">
+            <style type="text/css">
+                body.container, .container, #wrapwrap, main, .article {
+                    width: auto !important;
+                    max-width: none !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                }
+                .pos-receipt-break { page-break-before: always; }
+                .pos-receipt {
+                    font-family: "DejaVu Sans", "Noto Sans", sans-serif;
+                    font-size: 13px;
+                    color: #000;
+                    line-height: 1.25;
+                    width: 100%;
+                }
+                .pos-receipt .pos-receipt-logo {
+                    display: block;
+                    width: auto;
+                    max-width: 52%;
+                    max-height: 58px;
+                    margin: 0 auto 6px auto;
+                }
+                .pos-receipt .pos-receipt-center-align { text-align: center; }
+                .pos-receipt .ticket-meta,
+                .pos-receipt .pos-receipt-contact,
+                .pos-receipt .pos-receipt-customer {
+                    text-align: center;
+                    font-size: 11px;
+                    line-height: 1.35;
+                }
+                .pos-receipt .pos-receipt-customer { margin-top: 10px; }
+                .pos-receipt .orderlines { margin-top: 14px; }
+                .pos-receipt .orderline { margin-top: 8px; page-break-inside: avoid; }
+                .pos-receipt table.orderline-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                }
+                .pos-receipt td.qty {
+                    width: 1.7em;
+                    font-size: 13px;
+                    font-weight: 700;
+                    vertical-align: top;
+                    padding: 0 6px 0 0;
+                    white-space: nowrap;
+                }
+                .pos-receipt .qty-decimal {
+                    font-weight: 400;
+                    font-size: 85%;
+                }
+                .pos-receipt td.product-name {
+                    font-size: 13px;
+                    vertical-align: top;
+                    padding-right: 6px;
+                    word-wrap: break-word;
+                }
+                .pos-receipt td.product-price {
+                    width: 1%;
+                    font-size: 12px;
+                    vertical-align: top;
+                    text-align: right;
+                    white-space: nowrap;
+                    font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+                }
+                .pos-receipt .info-list,
+                .pos-receipt .price-per-unit {
+                    font-size: 9px;
+                    font-weight: 400;
+                    line-height: 1.2;
+                    margin-top: 1px;
+                }
+                .pos-receipt .customer-note {
+                    margin: 6px 0;
+                    font-size: 11px;
+                    word-wrap: break-word;
+                }
+                .pos-receipt .line-section { font-weight: 700; font-size: 12px; }
+                .pos-receipt .line-note { font-style: italic; }
+                .pos-receipt .line-note .fa { margin-right: 4px; }
+                .pos-receipt table.pos-totals {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 12px;
+                }
+                .pos-receipt table.pos-totals td {
+                    font-size: 12px;
+                    padding: 1px 0;
+                    vertical-align: top;
+                }
+                .pos-receipt table.pos-totals td.num {
+                    width: 1%;
+                    text-align: right;
+                    white-space: nowrap;
+                    padding-left: 8px;
+                    font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+                }
+                .pos-receipt tr.receipt-total td { font-weight: 700; }
+                .pos-receipt .fiscal-summary { margin-top: 8px; page-break-inside: avoid; }
+                .pos-receipt .fiscal-title {
+                    font-size: 9px;
+                    font-weight: 700;
+                    margin-bottom: 2px;
+                }
+                .pos-receipt table.pos-receipt-qr {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 12px;
+                    page-break-inside: avoid;
+                }
+                .pos-receipt .qr-image { width: 92px; vertical-align: top; }
+                .pos-receipt .pos-receipt-qrcode { width: 88px; height: 88px; }
+                .pos-receipt .qr-text {
+                    font-size: 10px;
+                    vertical-align: top;
+                    padding-left: 6px;
+                    word-wrap: break-word;
+                }
+                .pos-receipt .narration { margin-top: 10px; }
+                .pos-receipt table.pos-footer {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 14px;
+                    font-size: 10px;
+                }
+                .pos-receipt .footer-left { width: 58%; vertical-align: top; text-align: left; word-wrap: break-word; }
+                .pos-receipt .footer-right { width: 42%; vertical-align: top; text-align: right; word-wrap: break-word; }
+                .pos-receipt .pos-receipt-order-data { font-size: 10px; }
+                .pos-receipt .footer-powered-by { margin-top: 10px; }
+                .pos-receipt .font-monospace {
+                    font-family: "DejaVu Sans Mono", "Liberation Mono", monospace;
+                }
+            </style>
+            <t t-foreach="docs" t-as="o">
+                <t t-set="lang" t-value="o.partner_id.lang or o.env.lang"/>
+                <t t-set="ticket_first" t-value="o_first"/>
+                <t t-call="kai_account_invoice_ticket.report_invoice_ticket_document" t-lang="lang"/>
+            </t>
+        </t>
+    </template>
+</odoo>
