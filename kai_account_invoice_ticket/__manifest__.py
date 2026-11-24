@@ -1,6 +1,6 @@
 {
     "name": "Ticket de factura 80 mm",
-    "version": "19.0.1.0.0",
+    "version": "19.0.1.0.1",
     "summary": "Imprime la factura de cliente en formato ticket de 80 mm, con el mismo layout que el recibo del Punto de Venta",
     "description": """
 Agrega «Imprimir ticket factura» al menú Imprimir de las facturas de cliente,
@@ -26,6 +26,11 @@ comprobante tiene esos campos con valor.
     "data": [
         "report/report_invoice_ticket.xml",
     ],
+    "assets": {
+        "web.report_assets_common": [
+            "kai_account_invoice_ticket/static/src/scss/invoice_ticket.scss",
+        ],
+    },
     "installable": True,
     "application": False,
     "auto_install": False,

@@ -8,4 +8,6 @@ En la factura, «Ticket …» pasa a ser el tipo de comprobante, la letra y el n
 
 Los importes usan la misma lógica que el PDF argentino: `_l10n_ar_prices_and_taxes`, `_l10n_ar_get_invoice_totals_for_report` y, si corresponde, el régimen de transparencia fiscal. El lugar del QR de autofacturación del PdV queda para el QR de AFIP, el CAE y su vencimiento, y solo se imprime si esos campos existen y tienen valor.
 
+El CSS va en `web.report_assets_common` (lo carga el `<head>` de `web.minimal_layout`) y también en atributos `style` de las celdas. Un `<style>` fuera de `div.article` no llega a wkhtmltopdf: Odoo se queda solo con ese div.
+
 Depende de: `account`, `l10n_ar`, `l10n_latam_invoice_document`.

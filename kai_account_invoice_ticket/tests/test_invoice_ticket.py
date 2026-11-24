@@ -105,7 +105,9 @@ class TestInvoiceTicket(AccountTestInvoicingCommon):
         self.assertEqual(report_type, "html")
         if isinstance(html, bytes):
             html = html.decode()
-        self.assertIn("pos-receipt", html)
+        self.assertIn("kai-invoice-ticket", html)
+        self.assertIn("class=\"article\"", html)
+        self.assertIn("border:0", html)
         self.assertIn("Agua x 1.5 Lts", html)
         self.assertNotIn("[ABC]", html)
         self.assertIn("Atendido por:", html)
@@ -115,7 +117,7 @@ class TestInvoiceTicket(AccountTestInvoicingCommon):
         self.assertIn("Sección ticket", html)
         self.assertIn("Nota ticket", html)
         self.assertIn("Nota:", html)
-        self.assertIn("pos-receipt-break", html)
+        self.assertIn("kai-ticket-break", html)
         self.assertNotIn("fa-sticky-note", html)
         self.assertNotIn("fa-tag", html)
         self.assertNotIn("¿Necesita factura?", html)
@@ -129,6 +131,12 @@ class TestInvoiceTicket(AccountTestInvoicingCommon):
         self.assertNotIn(" ", text)
         self.assertFalse(text.endswith("0"))
         self.assertTrue(text.startswith("0"))
+
+    def test_tax_group_name_drops_trailing_letter(self):
+        move = self.env["account.move"]
+        self.assertEqual(move._kai_ticket_trim_tax_name("IVA 21% X"), "IVA 21%")
+        self.assertEqual(move._kai_ticket_trim_tax_name("IVA 21%"), "IVA 21%")
+        self.assertEqual(move._kai_ticket_trim_tax_name("Perc. IIBB"), "Perc. IIBB")
 
     def test_fiscal_label_keeps_a_single_currency_symbol(self):
         invoice = self._customer_invoice(post=False)

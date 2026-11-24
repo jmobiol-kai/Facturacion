@@ -1,0 +1,228 @@
+// Entra por web.report_assets_common, que minimal_layout carga en el <head>
+// del HTML que sí recibe wkhtmltopdf. Los selectores quedan bajo
+// .kai-invoice-ticket para no tocar el resto de los reportes.
+.kai-invoice-ticket {
+    width: 100%;
+    max-width: 270px;
+    margin: 0 auto;
+    font-family: "DejaVu Sans", sans-serif;
+    font-size: 9pt;
+    line-height: 1.15;
+    color: #000;
+    text-align: left;
+
+    table,
+    thead,
+    tbody,
+    tr,
+    td,
+    th {
+        border: 0 none transparent !important;
+        border-style: none !important;
+        border-width: 0 !important;
+        outline: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        border-collapse: collapse;
+        border-spacing: 0;
+        margin: 0;
+        padding: 0;
+    }
+
+    .logo-slot {
+        text-align: center;
+        margin: 0 0 1mm;
+        line-height: 0;
+    }
+
+    .pos-receipt-logo {
+        display: inline-block;
+    }
+
+    .ticket-meta,
+    .pos-receipt-customer,
+    .footer-powered-by {
+        text-align: center;
+        font-size: 8pt;
+        line-height: 1.15;
+    }
+
+    .issuer-extra {
+        font-size: 7pt;
+    }
+
+    .pos-receipt-customer {
+        margin-top: 2mm;
+    }
+
+    .orderlines {
+        margin-top: 2mm;
+        text-align: left;
+    }
+
+    .orderline {
+        margin-top: 1mm;
+        page-break-inside: avoid;
+    }
+
+    table.orderline-table,
+    table.pos-totals,
+    table.fiscal-table,
+    table.pos-receipt-qr,
+    table.pos-footer {
+        width: 100%;
+    }
+
+    td.qty {
+        width: 8mm;
+        font-size: 10pt;
+        font-weight: 700;
+        vertical-align: top;
+        padding-right: 1.5mm;
+        white-space: nowrap;
+    }
+
+    td.product-name {
+        font-size: 10pt;
+        line-height: 1.15;
+        vertical-align: top;
+        padding-right: 1.5mm;
+    }
+
+    td.product-price,
+    td.num {
+        text-align: right;
+        white-space: nowrap;
+        vertical-align: top;
+        font-family: "DejaVu Sans Mono", monospace;
+    }
+
+    td.product-price {
+        width: 24mm;
+        padding-left: 2mm;
+        font-size: 9pt;
+    }
+
+    .price-per-unit,
+    .discount-line {
+        font-size: 7pt;
+        font-weight: 400;
+        line-height: 1.15;
+        white-space: nowrap;
+    }
+
+    .customer-note {
+        margin: 0.6mm 0;
+        font-size: 8pt;
+    }
+
+    .line-section {
+        font-weight: 700;
+        font-size: 9pt;
+    }
+
+    .line-note {
+        font-style: italic;
+    }
+
+    table.pos-totals {
+        margin-top: 2mm;
+    }
+
+    table.pos-totals td,
+    table.fiscal-table td {
+        font-size: 9pt;
+        line-height: 1.15;
+        vertical-align: top;
+        padding-top: 0.2mm;
+        padding-bottom: 0.2mm;
+    }
+
+    td.num {
+        width: 28mm;
+        padding-left: 3mm;
+        font-size: 9pt;
+    }
+
+    tr.receipt-total td {
+        font-weight: 700;
+    }
+
+    .fiscal-summary {
+        margin-top: 1.5mm;
+        page-break-inside: avoid;
+    }
+
+    .fiscal-title {
+        font-size: 7pt;
+        font-weight: 700;
+        line-height: 1.15;
+        margin-bottom: 0.4mm;
+    }
+
+    table.fiscal-table td {
+        font-size: 7pt;
+    }
+
+    table.pos-receipt-qr {
+        margin-top: 2mm;
+        page-break-inside: avoid;
+    }
+
+    .qr-image {
+        width: 22mm;
+        vertical-align: top;
+    }
+
+    .pos-receipt-qrcode {
+        width: 20mm;
+        height: 20mm;
+    }
+
+    .qr-text {
+        font-size: 7.5pt;
+        vertical-align: top;
+        padding-left: 2mm;
+    }
+
+    .narration {
+        margin-top: 1.5mm;
+        font-size: 7.5pt;
+        text-align: center;
+    }
+
+    table.pos-footer {
+        margin-top: 3mm;
+        font-size: 7.5pt;
+    }
+
+    .footer-left {
+        width: 62%;
+        text-align: left;
+        vertical-align: top;
+        white-space: nowrap;
+        font-size: 7.5pt;
+    }
+
+    .footer-right {
+        width: 38%;
+        text-align: right;
+        vertical-align: top;
+        white-space: nowrap;
+        padding-left: 2mm;
+        font-size: 7.5pt;
+    }
+
+    .footer-powered-by {
+        margin-top: 2mm;
+        font-size: 7.5pt;
+    }
+
+    .font-monospace {
+        font-family: "DejaVu Sans Mono", monospace;
+    }
+}
+
+.kai-invoice-ticket.kai-ticket-break {
+    page-break-before: always;
+}

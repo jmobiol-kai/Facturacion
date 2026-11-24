@@ -311,8 +311,7 @@ class AccountMove(models.Model):
             subtotals.append({
                 "base": subtotal.get("base_amount_currency"),
                 "groups": [{
-                    "name": group.get("group_name"),
-                    "label": group.get("group_label") or False,
+                    "name": self._kai_ticket_tax_caption(group.get("id"), group.get("group_name")),
                     "amount": group.get("tax_amount_currency"),
                     "base": group.get("base_amount_currency"),
                 } for group in groups],
@@ -326,6 +325,27 @@ class AccountMove(models.Model):
             "rounding": rounding,
             "total": totals.get("total_amount_currency", self.amount_total),
         }
+
+    def _kai_ticket_trim_tax_name(self, name):
+        """'IVA 21% X' es el nombre del grupo; en el ticket queda 'IVA 21%'."""
+        label = (name or "").strip()
+        parts = label.split()
+        if len(parts) >= 2 and len(parts[-1]) == 1 and parts[-1].isalpha():
+            return " ".join(parts[:-1])
+        return label
+
+    def _kai_ticket_tax_caption(self, group_id, fallback):
+        group = self.env["account.tax.group"].browse(group_id) if group_id else self.env["account.tax.group"]
+        if group and "l10n_ar_vat_afip_code" in group._fields and group.l10n_ar_vat_afip_code:
+            taxes = self.invoice_line_ids.tax_ids.filtered(
+                lambda tax: tax.tax_group_id == group and tax.amount_type == "percent"
+            )
+            rates = sorted({tax.amount for tax in taxes})
+            if len(rates) == 1:
+                rate = rates[0]
+                rate_txt = str(int(rate)) if float(rate).is_integer() else ("%s" % rate).rstrip("0").rstrip(".")
+                return "IVA %s%%" % rate_txt
+        return self._kai_ticket_trim_tax_name(fallback)
 
     def _kai_ticket_payments(self):
         self.ensure_one()
