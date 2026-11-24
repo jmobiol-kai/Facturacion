@@ -917,3 +917,77 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         stock_credit = sum(cogs.filtered(lambda move_line: move_line.account_id == stock_account).mapped("credit"))
         self.assertAlmostEqual(expense_debit, 58.0, places=2)
         self.assertAlmostEqual(stock_credit, 58.0, places=2)
+
+    def _merge_invoice_lines_like_history(self, invoice_lines):
+        """Imita una factura histórica: una línea, varios pedidos, sin flags."""
+        invoice_lines = invoice_lines.sorted("id")
+        keeper = invoice_lines[:1]
+        others = invoice_lines[1:]
+        sale_lines = invoice_lines.sale_line_ids
+        quantity = sum(invoice_lines.mapped("quantity"))
+        keeper.with_context(check_move_validity=False, skip_invoice_sync=True).write({
+            "quantity": quantity,
+            "sale_line_ids": [Command.set(sale_lines.ids)],
+            "kai_invoice_by_product": False,
+            "kai_invoice_by_order": False,
+            "kai_invoice_by_order_qty_map": False,
+            "kai_invoice_by_order_amount_map": False,
+        })
+        if others:
+            others.with_context(check_move_validity=False, skip_invoice_sync=True).unlink()
+        return keeper
+
+    def test_historical_shared_invoice_line_without_module_flags(self):
+        """Facturas ya emitidas que agrupan por producto, sin flags ni mapa.
+
+        Es el caso de La Fija: varios pedidos facturados juntos, mismas
+        guarniciones en $0 y un plato pago, una sola línea de factura
+        vinculada a todas las líneas de venta. Odoo estándar deja las
+        órdenes «por facturar» porque cuenta la cantidad completa en cada
+        pedido. El recálculo tiene que usar la cantidad pedida, no el precio.
+        """
+        self.env.company.invoice_by_sale_order = False
+        tax = self.tax_sale_a
+        dish = self.company_data["product_order_no"]
+        side = self.company_data["product_order_sales_price"]
+        partner = self.partner_a
+        first = self._make_order(partner, [
+            (dish, 2, 100.0, tax),
+            (side, 3, 0.0, tax),
+        ])
+        second = self._make_order(partner, [
+            (dish, 1, 100.0, tax),
+            (side, 5, 0.0, tax),
+        ])
+        orders = first | second
+        invoice = self._wizard(orders, "native", consolidated=True)._create_invoices(orders)
+        self.assertEqual(len(invoice), 1)
+        products = self._product_lines(invoice)
+        self.assertEqual(len(products), 4)
+        self.assertFalse(any(products.mapped("kai_invoice_by_product")))
+
+        dish_line = self._merge_invoice_lines_like_history(
+            products.filtered(lambda line: line.product_id == dish)
+        )
+        side_line = self._merge_invoice_lines_like_history(
+            products.filtered(lambda line: line.product_id == side)
+        )
+        self.assertAlmostEqual(dish_line.quantity, 3.0)
+        self.assertAlmostEqual(side_line.quantity, 8.0)
+        self.assertFalse(dish_line.kai_invoice_by_product)
+        self.assertFalse(bool(dish_line.kai_invoice_by_order_qty_map))
+
+        for sale_line in self._sale_product_lines(orders):
+            sale_line.invalidate_recordset([
+                "qty_invoiced", "qty_to_invoice", "invoice_status",
+            ])
+            self.assertAlmostEqual(sale_line.qty_invoiced, sale_line.product_uom_qty)
+            self.assertAlmostEqual(sale_line.qty_to_invoice, 0.0)
+            self.assertEqual(sale_line.invoice_status, "invoiced")
+        orders.invalidate_recordset(["invoice_status"])
+        self.assertEqual(first.invoice_status, "invoiced")
+        self.assertEqual(second.invoice_status, "invoiced")
+
+        self.env["sale.order.line"]._kai_recompute_shared_invoice_qty()
+        self.assertEqual(first.invoice_status, "invoiced")
+        self.assertEqual(second.invoice_status, "invoiced")
