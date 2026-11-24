@@ -66,6 +66,32 @@ class TestInvoiceTicket(AccountTestInvoicingCommon):
         for margin in (paper.margin_top, paper.margin_bottom, paper.margin_left, paper.margin_right):
             self.assertAlmostEqual(margin, 3.0)
 
+    def test_header_button_prints_ticket_without_marking_sent(self):
+        invoice = self._customer_invoice()
+        self.assertFalse(invoice.is_move_sent)
+        action = invoice.action_print_invoice_ticket()
+        self.assertEqual(action["type"], "ir.actions.report")
+        self.assertEqual(
+            action["report_name"],
+            "kai_account_invoice_ticket.report_invoice_ticket",
+        )
+        self.assertFalse(invoice.is_move_sent)
+
+        arch = self.env["account.move"].get_view(view_type="form")["arch"]
+        self.assertIn("action_print_pdf", arch)
+        self.assertIn("action_print_invoice_ticket", arch)
+        self.assertLess(
+            arch.rindex('name="action_print_pdf"'),
+            arch.index('name="action_print_invoice_ticket"'),
+        )
+        self.assertIn("Ticket Factura", arch)
+        self.assertIn("out_invoice", arch)
+        self.assertIn("draft", arch)
+        self.assertIn("posted", arch)
+
+        report = self.env.ref("kai_account_invoice_ticket.action_report_invoice_ticket")
+        self.assertEqual(report.binding_type, "report")
+
     def test_compact_cuit_has_no_dashes(self):
         move = self.env["account.move"]
         self.assertEqual(move._kai_ticket_compact_vat("30-71542606-0"), "30715426060")

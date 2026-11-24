@@ -1,6 +1,6 @@
 # kai_account_invoice_ticket
 
-Ticket de 80 mm para facturas de cliente, notas de crédito y recibos de venta. Entra en **Imprimir › Imprimir ticket factura** y no reemplaza el PDF A4.
+Ticket de 80 mm para facturas de cliente, notas de crédito y recibos de venta. Entra en **Imprimir › Imprimir ticket factura** y, en el formulario, con el botón **Ticket Factura** (borrador o publicado). No reemplaza el PDF A4 ni marca la factura como enviada.
 
 El layout sigue el recibo del Punto de Venta de Odoo 19 (`point_of_sale.OrderReceipt`, `ReceiptHeader` y `Orderline`), medido contra el ticket impreso del PdV (logo, «Ticket…», fecha, «Atendido por», cliente, cantidad + nombre + precio unitario, totales, pie y «Con la tecnología de Odoo»). No depende de `point_of_sale`: los estilos van en este módulo porque el PDF lo genera wkhtmltopdf.
 

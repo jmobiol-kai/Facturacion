@@ -10,6 +10,13 @@ from odoo.tools.misc import formatLang, format_date
 class AccountMove(models.Model):
     _inherit = "account.move"
 
+    def action_print_invoice_ticket(self):
+        """Abre el PDF del ticket. No marca la factura como enviada."""
+        self.ensure_one()
+        return self.env.ref(
+            "kai_account_invoice_ticket.action_report_invoice_ticket"
+        ).report_action(self)
+
     def _kai_ticket_values(self):
         """Datos del ticket, en el orden del recibo del Punto de Venta."""
         self.ensure_one()

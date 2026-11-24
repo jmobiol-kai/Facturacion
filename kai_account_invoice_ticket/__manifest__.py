@@ -1,11 +1,12 @@
 {
     "name": "Ticket de factura 80 mm",
-    "version": "19.0.1.0.1",
+    "version": "19.0.1.1.0",
     "summary": "Imprime la factura de cliente en formato ticket de 80 mm, con el mismo layout que el recibo del Punto de Venta",
     "description": """
-Agrega «Imprimir ticket factura» al menú Imprimir de las facturas de cliente,
-notas de crédito y recibos de venta. El PDF es un ticket de 80 mm (impresora
-térmica) y no reemplaza la factura A4.
+Agrega «Imprimir ticket factura» al menú Imprimir y el botón «Ticket Factura»
+en el formulario de facturas de cliente, notas de crédito y recibos de venta.
+El PDF es un ticket de 80 mm (impresora térmica) y no reemplaza la factura A4.
+El botón no marca el comprobante como enviado.
 
 El layout copia el recibo del Punto de Venta de Odoo 19 (OrderReceipt): logo,
 comprobante, fecha, atendido por, cliente, renglones con cantidad y precio
@@ -25,6 +26,7 @@ comprobante tiene esos campos con valor.
     ],
     "data": [
         "report/report_invoice_ticket.xml",
+        "views/account_move_views.xml",
     ],
     "assets": {
         "web.report_assets_common": [
