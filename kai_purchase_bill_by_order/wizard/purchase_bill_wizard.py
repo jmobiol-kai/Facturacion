@@ -51,6 +51,13 @@ class PurchaseBillWizard(models.TransientModel):
             ))
         before = orders.invoice_ids
         orders = orders.with_context(kai_bill_line_mode=self.invoice_line_mode)
+        # Una factura por OC llama action_create_invoice de a un pedido, así que
+        # esa llamada no ve la mezcla X/FE. El helper de purchase.order mira el
+        # conjunto completo antes de crear cualquier factura. Consolidar también
+        # lo vuelve a chequear dentro de action_create_invoice.
+        check_documents = getattr(orders, "_msb_check_mixed_document_journals", None)
+        if check_documents:
+            check_documents()
         if self.consolidate_by_vendor:
             orders.action_create_invoice()
         else:
