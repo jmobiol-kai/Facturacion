@@ -9,3 +9,4 @@ from . import test_purchase_journal_defaults
 from . import test_purchase_journal_write
 from . import test_recompute_taxes
 from . import test_tax_mapping
+from . import test_mixed_purchase_document_journals

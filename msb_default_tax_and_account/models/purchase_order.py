@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
-from odoo import models, fields, api
+from odoo import _, api, fields, models
+from odoo.exceptions import UserError
 
 
 class PurchaseOrder(models.Model):
@@ -37,17 +38,36 @@ class PurchaseOrder(models.Model):
                 if mapping_journal_ids:
                     order.journal_id = mapping_journal_ids[0]
 
+    def _msb_check_mixed_document_journals(self):
+        """Block billing X (no documents) and FE (with documents) orders together.
+
+        Orders without ``journal_id`` are neither X nor FE. If the localization
+        field is not installed there is nothing to compare.
+        """
+        if 'l10n_latam_use_documents' not in self.env['account.journal']._fields:
+            return
+        journals = self.journal_id
+        if len(journals) < 2:
+            return
+        uses_documents = set(journals.mapped('l10n_latam_use_documents'))
+        if True in uses_documents and False in uses_documents:
+            raise UserError(_("No se pueden facturar pedidos X y FE juntos"))
+
     def action_create_invoice(self, attachment_ids=False):
+        """Pass the purchase journal through without mixing X and FE orders.
+
+        ``default_journal_id`` is set only when every selected order that has a
+        journal shares that same journal. Reading ``self.journal_id.id`` with
+        two journals raises ``Expected singleton``. Leaving the key unset keeps
+        each order's journal from ``_prepare_invoice`` and does not split the
+        bill: core still groups by company, vendor and currency. Purchase lines
+        already prefer ``order_id.journal_id`` over this context key.
         """
-        Override to ensure the selected journal is passed through to invoice creation.
-        This allows purchase_order_line._prepare_account_move_line to access the journal.
-        """
-        if self.journal_id:
-            # Pass journal in context so purchase lines can access it
-            return super(PurchaseOrder, self.with_context(
-                default_journal_id=self.journal_id.id
-            )).action_create_invoice(attachment_ids=attachment_ids)
-        return super().action_create_invoice(attachment_ids=attachment_ids)
+        self._msb_check_mixed_document_journals()
+        journals = self.journal_id
+        if len(journals) == 1:
+            self = self.with_context(default_journal_id=journals.id)
+        return super(PurchaseOrder, self).action_create_invoice(attachment_ids=attachment_ids)
 
     def _prepare_invoice(self):
         """

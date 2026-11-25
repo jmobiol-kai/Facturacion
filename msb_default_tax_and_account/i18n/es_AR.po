@@ -1,0 +1,23 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* msb_default_tax_and_account
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 19.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-25 00:00+0000\n"
+"PO-Revision-Date: 2026-11-25 00:00+0000\n"
+"Last-Translator: Kaizendo\n"
+"Language-Team: Spanish (Argentina)\n"
+"Language: es_AR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. module: msb_default_tax_and_account
+#. odoo-python
+#: code:addons/msb_default_tax_and_account/models/purchase_order.py:0
+msgid "No se pueden facturar pedidos X y FE juntos"
+msgstr "No se pueden facturar pedidos X y FE juntos"
