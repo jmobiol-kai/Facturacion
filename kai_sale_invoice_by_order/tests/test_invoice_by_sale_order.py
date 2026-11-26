@@ -41,6 +41,18 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
             lambda line: line.display_type == "line_section" and line.kai_invoice_by_order
         )
 
+    def _assert_section_date(self, order, expected_date):
+        invoice = self._wizard(order, "by_order")._create_invoices(order)
+        self.assertEqual(len(invoice), 1)
+        self.assertEqual(invoice._kai_sale_order_section_date(order), expected_date)
+        section = self._sections(invoice)
+        self.assertEqual(len(section), 1)
+        self.assertEqual(
+            section.name,
+            f"{order.name} · {format_date(self.env, expected_date)} · {order.partner_id.display_name}",
+        )
+        return invoice
+
     def _post(self, moves):
         """Publica sin documentos locales ni web service de AFIP."""
         journals = moves.journal_id
@@ -80,6 +92,9 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         by_order = {section.kai_sale_order_id: section for section in sections}
         self.assertEqual(set(by_order), {first, second})
         for order, section in by_order.items():
+            # Sin entrega validada ni fecha de compromiso, la sección usa el pedido.
+            self.assertFalse(order.commitment_date)
+            self.assertEqual(invoice._kai_sale_order_section_date(order), order.date_order)
             label_date = format_date(self.env, order.date_order)
             self.assertEqual(
                 section.name,
@@ -117,6 +132,67 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
             self.assertEqual(line.invoice_status, "invoiced")
         self.assertEqual(first.invoice_status, "invoiced")
         self.assertEqual(second.invoice_status, "invoiced")
+
+    def test_section_date_uses_commitment_without_validated_delivery(self):
+        """Sin entrega validada, la fecha de compromiso le gana a la del pedido."""
+        product = self._medialuna(type="service", invoice_policy="order")
+        order = self._make_order(self.partner_a, [(product, 1, 100.0, self.tax_sale_a)])
+        order_date = fields.Datetime.to_datetime("2026-01-10 12:00:00")
+        commitment = fields.Datetime.to_datetime("2026-02-10 12:00:00")
+        order.write({"date_order": order_date, "commitment_date": commitment})
+        if "picking_ids" in order._fields:
+            self.assertFalse(order.picking_ids.filtered(lambda picking: picking.state == "done"))
+        if "effective_date" in order._fields:
+            self.assertFalse(order.effective_date)
+        self.assertNotEqual(
+            format_date(self.env, commitment), format_date(self.env, order.date_order),
+        )
+        self._assert_section_date(order, commitment)
+
+    def test_section_date_uses_validated_delivery(self):
+        """Un remito validado en otra fecha le gana al compromiso y al pedido."""
+        if "picking_ids" not in self.env["sale.order"]._fields or "stock.picking" not in self.env:
+            self.skipTest("Hace falta sale_stock para una entrega validada.")
+        product = self._medialuna(invoice_policy="order")
+        order = self._make_order(self.partner_a, [(product, 1, 100.0, self.tax_sale_a)])
+        order_date = fields.Datetime.to_datetime("2026-01-10 12:00:00")
+        commitment = fields.Datetime.to_datetime("2026-02-10 12:00:00")
+        delivery_date = fields.Datetime.to_datetime("2026-03-10 12:00:00")
+        order.write({"date_order": order_date, "commitment_date": commitment})
+        pickings = order.picking_ids.filtered(lambda picking: picking.state not in ("done", "cancel"))
+        self.assertTrue(pickings)
+        for picking in pickings:
+            picking.action_assign()
+            for move in picking.move_ids:
+                move.quantity = move.product_uom_qty
+                move.picked = True
+            result = picking.button_validate()
+            if isinstance(result, dict):
+                wizard = self.env[result["res_model"]].with_context(result.get("context") or {}).create({})
+                wizard.process()
+        done = order.picking_ids.filtered(lambda picking: picking.state == "done")
+        self.assertTrue(done)
+        done.write({"date_done": delivery_date})
+        order.invalidate_recordset(["effective_date"])
+        if "effective_date" in order._fields:
+            self.assertEqual(order.effective_date, delivery_date)
+        self.assertNotEqual(format_date(self.env, delivery_date), format_date(self.env, order.date_order))
+        self.assertNotEqual(format_date(self.env, delivery_date), format_date(self.env, order.commitment_date))
+        self._assert_section_date(order, delivery_date)
+
+    def test_section_date_falls_back_to_order_date(self):
+        """Sin entrega validada ni compromiso, la sección usa la fecha del pedido."""
+        product = self._medialuna(type="service", invoice_policy="order")
+        order = self._make_order(self.partner_a, [(product, 1, 100.0, self.tax_sale_a)])
+        order_date = fields.Datetime.to_datetime("2026-01-10 12:00:00")
+        order.write({"date_order": order_date, "commitment_date": False})
+        self.assertEqual(order.date_order, order_date)
+        self.assertFalse(order.commitment_date)
+        if "picking_ids" in order._fields:
+            self.assertFalse(order.picking_ids.filtered(lambda picking: picking.state == "done"))
+        if "effective_date" in order._fields:
+            self.assertFalse(order.effective_date)
+        self._assert_section_date(order, order_date)
 
     def test_groups_by_tax_inside_the_same_order(self):
         tax_a = self.tax_sale_a

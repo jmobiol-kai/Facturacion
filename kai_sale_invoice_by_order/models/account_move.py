@@ -31,11 +31,34 @@ class AccountMove(models.Model):
                 move._kai_do_consolidate_by_product()
 
 
+    def _kai_sale_order_section_date(self, order):
+        """Fecha de la sección: última entrega validada, compromiso o pedido.
+
+        La entrega validada es ``effective_date`` cuando el campo existe y
+        tiene valor. Si no, es el ``date_done`` más reciente de los remitos
+        en estado hecho. Sin entrega, se usa ``commitment_date`` y, si
+        tampoco, ``date_order``. Los campos de stock se miran en ``_fields``
+        porque este módulo no depende de sale_stock.
+        """
+        self.ensure_one()
+        if "effective_date" in order._fields and order.effective_date:
+            return order.effective_date
+        if "picking_ids" in order._fields:
+            done_dates = order.picking_ids.filtered(
+                lambda picking: picking.state == "done" and picking.date_done
+            ).mapped("date_done")
+            if done_dates:
+                return max(done_dates)
+        if "commitment_date" in order._fields and order.commitment_date:
+            return order.commitment_date
+        return order.date_order
+
     def _kai_sale_order_section_name(self, order):
         self.ensure_one()
+        date = self._kai_sale_order_section_date(order)
         return _("%s · %s · %s") % (
             order.name,
-            format_date(self.env, order.date_order),
+            format_date(self.env, date),
             order.partner_id.display_name or order.partner_id.name or "",
         )
 
