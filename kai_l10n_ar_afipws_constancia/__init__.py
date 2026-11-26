@@ -7,3 +7,4 @@ if not hasattr(configparser, "SafeConfigParser"):
     configparser.SafeConfigParser = configparser.ConfigParser
 
 from . import models
+from . import wizard
