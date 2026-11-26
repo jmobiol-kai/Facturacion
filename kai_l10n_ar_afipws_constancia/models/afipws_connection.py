@@ -73,7 +73,8 @@ class AfipwsConnection(models.Model):
                 % repr(error)
             ) from error
 
-        cuit = self._get_afip_ws_cuit()
+        # Same CUIT as afipws.connection.connect() in l10n_ar_afipws (19.0).
+        cuit = self.company_id.partner_id.ensure_vat()
         ws.Cuit = cuit
         ws.Token = self.token
         ws.Sign = self.sign
