@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!--
+        ir.actions.report._prepare_html se queda solo con cada div.article
+        y lo vuelve a envolver en web.minimal_layout. Un <style> hermano del
+        article (dentro de web.html_container, antes del body) no llega a
+        wkhtmltopdf. web.basic_layout ya llama a web.html_container y arma
+        ese article: llamarlo otra vez adentro anida un segundo HTML y lxml
+        puede perder las facturas siguientes. Acá hay un article por
+        comprobante, el mismo envoltorio que basic_layout, con
+        div.page.kai-invoice-ticket adentro.
+
+        El CSS está en web.report_assets_common (el <head> de minimal_layout)
+        y repetido en atributos style, porque el bootstrap del reporte y el
+        user-agent de wkhtmltopdf dibujan bordes en table/td.
+    -->
+    <record id="paperformat_invoice_ticket_80mm" model="report.paperformat">
+        <field name="name">Ticket factura 80 mm</field>
+        <field name="default" eval="False"/>
+        <field name="format">custom</field>
+        <field name="page_width">80</field>
+        <field name="page_height">297</field>
+        <field name="orientation">Portrait</field>
+        <field name="margin_top">3</field>
+        <field name="margin_bottom">3</field>
+        <field name="margin_left">3</field>
+        <field name="margin_right">3</field>
+        <field name="header_line" eval="False"/>
+        <field name="header_spacing">0</field>
+        <field name="dpi">90</field>
+        <field name="disable_shrinking" eval="True"/>
+    </record>
+
+    <record id="action_report_invoice_ticket" model="ir.actions.report">
+        <field name="name">Imprimir ticket factura</field>
+        <field name="model">account.move</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">kai_account_invoice_ticket.report_invoice_ticket</field>
+        <field name="report_file">kai_account_invoice_ticket.report_invoice_ticket</field>
+        <field name="print_report_name">'%s_ticket' % (object.name or 'Factura')</field>
+        <field name="paperformat_id" ref="paperformat_invoice_ticket_80mm"/>
+        <field name="binding_model_id" ref="account.model_account_move"/>
+        <field name="binding_type">report</field>
+        <field name="domain">[('move_type', 'in', ('out_invoice', 'out_refund', 'out_receipt'))]</field>
+        <field name="is_invoice_report" eval="False"/>
+    </record>
+
+    <template id="report_invoice_ticket_document">
+        <t t-set="o" t-value="o.with_context(lang=lang)"/>
+        <t t-set="d" t-value="o._kai_ticket_values()"/>
+        <t t-set="edge" t-value="'border:0 !important;border-style:none !important;border-width:0 !important;outline:none;background:transparent;'"/>
+        <t t-set="cell" t-value="edge + 'padding:0;margin:0;vertical-align:top;'"/>
+        <div t-attf-class="page kai-invoice-ticket {{ '' if ticket_first else 'kai-ticket-break' }}" t-att-style="'width:100%;max-width:270px;margin:0 auto;font-family:DejaVu Sans,sans-serif;font-size:9pt;line-height:1.15;color:#000;' + ('' if ticket_first else 'page-break-before:always;')">
+            <div t-if="o.company_id.logo" class="logo-slot" style="text-align:center;margin:0 0 1mm 0;line-height:0;">
+                <img t-att-src="image_data_uri(o.company_id.logo)" t-att-style="d['logo_style'] + 'display:inline-block;max-width:50mm;max-height:20mm;'" class="pos-receipt-logo" alt="Logo"/>
+            </div>
+
+            <div class="ticket-meta" style="text-align:center;font-size:8pt;line-height:1.15;">
+                <div class="pos-receipt-vat">
+                    <span class="ticket-name-prefix" t-out="d['title']"/>
+                </div>
+                <div t-if="d['code']">Cod. <t t-out="d['code']"/></div>
+                <div t-if="d['issuer_vat_cond']" class="issuer-extra" style="font-size:7pt;" t-out="d['issuer_vat_cond']"/>
+                <div t-if="d['iibb']" class="issuer-extra" style="font-size:7pt;">IIBB: <t t-out="d['iibb']"/></div>
+                <div t-if="d['start_date']" class="issuer-extra" style="font-size:7pt;">Inicio de las actividades: <t t-out="d['start_date']"/></div>
+                <div t-if="o.invoice_date" id="order-date" t-field="o.invoice_date"/>
+                <div t-if="d['show_due']" style="white-space:nowrap;">
+                    Fecha de vencimiento: <span t-field="o.invoice_date_due"/>
+                </div>
+                <div t-if="d['origin']">Origen: <span t-out="d['origin']"/></div>
+                <div t-if="d['show_ref']">Referencia: <span t-out="d['ref']"/></div>
+                <div t-if="d['cashier']" class="cashier">
+                    Atendido por: <t t-out="d['cashier']"/>
+                </div>
+            </div>
+
+            <div class="pos-receipt-customer" style="text-align:center;font-size:8pt;line-height:1.15;margin-top:2mm;">
+                <div t-if="d['customer_name']" t-out="d['customer_name']"/>
+                <div t-if="d['customer_address']" t-out="d['customer_address']"/>
+                <div t-if="d['customer_vat_cond']">Cond. IVA: <t t-out="d['customer_vat_cond']"/></div>
+                <div t-if="d['customer_id_number']">
+                    <t t-out="d['customer_id_label']"/>: <t t-out="d['customer_id_number']"/>
+                </div>
+            </div>
+
+            <div class="orderlines" style="margin-top:2mm;text-align:left;">
+                <t t-foreach="d['lines']" t-as="row">
+                    <div t-if="row['kind'] == 'section'" class="customer-note line-section" style="font-weight:700;font-size:9pt;margin:0.6mm 0;">
+                        <span t-out="row['name']"/>
+                    </div>
+                    <div t-elif="row['kind'] == 'note'" class="customer-note line-note" style="font-style:italic;font-size:8pt;margin:0.6mm 0;">
+                        <span>Nota: <t t-out="row['name']"/></span>
+                    </div>
+                    <div t-else="" class="orderline" style="margin-top:1mm;">
+                        <table class="orderline-table" t-att-style="edge + 'width:100%;border-collapse:collapse;border-spacing:0;'">
+                            <tr t-att-style="edge">
+                                <td class="qty" t-att-style="cell + 'width:8mm;font-weight:700;font-size:10pt;white-space:nowrap;padding-right:1.5mm;'">
+                                    <span t-out="row['qty']"/>
+                                </td>
+                                <td class="product-name" t-att-style="cell + 'font-size:10pt;line-height:1.15;padding-right:1.5mm;'">
+                                    <span t-out="row['name']"/>
+                                    <div t-if="row['show_unit']" class="price-per-unit" style="font-size:7pt;font-weight:400;line-height:1.15;white-space:nowrap;">
+                                        <span t-out="row['price_unit']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                                        <t t-if="row['uom']"> / <t t-out="row['uom']"/></t>
+                                    </div>
+                                    <div t-if="row['discount']" class="discount-line" style="font-size:7pt;font-weight:400;white-space:nowrap;">
+                                        Descuento <t t-out="row['discount_label']"/>%
+                                    </div>
+                                </td>
+                                <td class="product-price font-monospace" t-att-style="cell + 'width:24mm;text-align:right;white-space:nowrap;padding-left:2mm;font-family:DejaVu Sans Mono,monospace;font-size:9pt;'">
+                                    <span t-out="row['price']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                </t>
+            </div>
+
+            <table class="pos-totals" t-att-style="edge + 'width:100%;border-collapse:collapse;border-spacing:0;margin-top:2mm;'">
+                <t t-foreach="d['tax_subtotals']" t-as="subtotal">
+                    <tr t-att-style="edge">
+                        <td class="label" t-att-style="cell + 'text-align:left;font-size:9pt;padding:0.2mm 2mm 0.2mm 0;'">Subtotal</td>
+                        <td class="num font-monospace" t-att-style="cell + 'width:28mm;text-align:right;white-space:nowrap;padding:0.2mm 0 0.2mm 3mm;font-family:DejaVu Sans Mono,monospace;font-size:9pt;'">
+                            <span t-out="subtotal['base']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                        </td>
+                    </tr>
+                    <tr t-foreach="subtotal['groups']" t-as="tax" t-att-style="edge">
+                        <td class="label" t-att-style="cell + 'text-align:left;font-size:9pt;padding:0.2mm 2mm 0.2mm 0;'">
+                            <span t-out="tax['name']"/>
+                            <t t-if="not d['same_tax_base']">
+                                en
+                                <span t-out="tax['base']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                            </t>
+                        </td>
+                        <td class="num font-monospace" t-att-style="cell + 'width:28mm;text-align:right;white-space:nowrap;padding:0.2mm 0 0.2mm 3mm;font-family:DejaVu Sans Mono,monospace;font-size:9pt;'">
+                            <span t-out="tax['amount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                        </td>
+                    </tr>
+                </t>
+                <tr class="receipt-total" t-att-style="edge">
+                    <td class="label" t-att-style="cell + 'text-align:left;font-size:9pt;font-weight:700;padding:0.2mm 2mm 0.2mm 0;'">Total</td>
+                    <td class="num font-monospace" t-att-style="cell + 'width:28mm;text-align:right;white-space:nowrap;padding:0.2mm 0 0.2mm 3mm;font-family:DejaVu Sans Mono,monospace;font-size:9pt;font-weight:700;'">
+                        <span t-out="d['total']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                    </td>
+                </tr>
+                <tr t-if="d['rounding'] is not None" class="receipt-rounding" t-att-style="edge">
+                    <td class="label" t-att-style="cell + 'text-align:left;font-size:9pt;padding:0.2mm 2mm 0.2mm 0;'">Redondeo</td>
+                    <td class="num font-monospace" t-att-style="cell + 'width:28mm;text-align:right;white-space:nowrap;padding:0.2mm 0 0.2mm 3mm;font-family:DejaVu Sans Mono,monospace;font-size:9pt;'">
+                        <span t-out="d['rounding']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                    </td>
+                </tr>
+                <tr t-foreach="d['payments']" t-as="pay" class="paymentlines" t-att-style="edge">
+                    <td class="label" t-att-style="cell + 'text-align:left;font-size:9pt;padding:0.2mm 2mm 0.2mm 0;'" t-out="pay['name']"/>
+                    <td class="num font-monospace" t-att-style="cell + 'width:28mm;text-align:right;white-space:nowrap;padding:0.2mm 0 0.2mm 3mm;font-family:DejaVu Sans Mono,monospace;font-size:9pt;'">
+                        <span t-out="pay['amount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                    </td>
+                </tr>
+                <tr t-if="d['discount_total']" class="label-discount" t-att-style="edge">
+                    <td class="label" t-att-style="cell + 'text-align:left;font-size:9pt;padding:0.2mm 2mm 0.2mm 0;'">Descuentos</td>
+                    <td class="num font-monospace" t-att-style="cell + 'width:28mm;text-align:right;white-space:nowrap;padding:0.2mm 0 0.2mm 3mm;font-family:DejaVu Sans Mono,monospace;font-size:9pt;'">
+                        <span t-out="d['discount_total']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                    </td>
+                </tr>
+            </table>
+
+            <div t-if="d['fiscal_summary']" class="fiscal-summary" style="margin-top:1.5mm;">
+                <div class="fiscal-title" style="font-size:7pt;font-weight:700;line-height:1.15;margin-bottom:0.4mm;">Régimen de Transparencia Fiscal para el Consumidor Final (Ley 27.743)</div>
+                <table class="fiscal-table" t-att-style="edge + 'width:100%;border-collapse:collapse;border-spacing:0;'">
+                    <tr t-foreach="d['fiscal_summary']" t-as="detail" t-att-style="edge">
+                        <td class="label" t-att-style="cell + 'text-align:left;font-size:7pt;padding:0.15mm 2mm 0.15mm 0;'" t-out="detail['name']"/>
+                        <td class="num font-monospace" t-att-style="cell + 'width:28mm;text-align:right;white-space:nowrap;padding:0.15mm 0 0.15mm 3mm;font-family:DejaVu Sans Mono,monospace;font-size:7pt;'">
+                            <span t-out="detail['amount']" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+
+            <table t-if="d['afip_qr'] or d['afip_cae'] or d['afip_cae_due']" class="pos-receipt-qr" t-att-style="edge + 'width:100%;border-collapse:collapse;margin-top:2mm;'">
+                <tr t-att-style="edge">
+                    <td t-if="d['afip_qr']" class="qr-image" t-att-style="cell + 'width:22mm;'">
+                        <img t-att-src="'/report/barcode/?barcode_type=QR&amp;value=%s&amp;width=%s&amp;height=%s' % (quote_plus(d['afip_qr']), 180, 180)" style="width:20mm;height:20mm;" alt="QR"/>
+                    </td>
+                    <td t-if="d['afip_cae'] or d['afip_cae_due']" class="qr-text" t-att-style="cell + 'font-size:7.5pt;padding-left:2mm;'">
+                        <div t-if="d['afip_cae']" style="font-weight:700;">CAE: <t t-out="d['afip_cae']"/></div>
+                        <div t-if="d['afip_cae_due']">Vencimiento CAE: <span t-out="d['afip_cae_due']" t-options='{"widget": "date"}'/></div>
+                    </td>
+                </tr>
+            </table>
+
+            <div t-if="not is_html_empty(o.narration)" class="narration" style="text-align:center;margin-top:1.5mm;font-size:7.5pt;">
+                <span t-field="o.narration"/>
+            </div>
+
+            <table class="pos-footer" t-att-style="edge + 'width:100%;border-collapse:collapse;border-spacing:0;margin-top:3mm;'">
+                <tr t-att-style="edge">
+                    <td class="footer-left" t-att-style="cell + 'width:62%;text-align:left;white-space:nowrap;font-size:7.5pt;'">
+                        <div class="pos-config-name" style="white-space:nowrap;" t-out="d['branch_name']"/>
+                        <div t-if="d['branch_address']" class="branch-address" style="white-space:nowrap;" t-out="d['branch_address']"/>
+                    </td>
+                    <td class="footer-right" t-att-style="cell + 'width:38%;text-align:right;white-space:nowrap;padding-left:2mm;font-size:7.5pt;'">
+                        <div t-if="d['cuit_number']" style="white-space:nowrap;">
+                            <t t-out="d['cuit_label']"/>: <t t-out="d['cuit_number']"/>
+                        </div>
+                    </td>
+                </tr>
+            </table>
+
+            <div class="footer-powered-by" style="text-align:center;margin-top:2mm;font-size:7.5pt;">
+                <span>Con la tecnología de <b>Odoo</b></span>
+            </div>
+        </div>
+    </template>
+
+    <template id="report_invoice_ticket">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="o">
+                <t t-set="lang" t-value="o.partner_id.lang or o.env.lang"/>
+                <t t-set="ticket_first" t-value="o_first"/>
+                <div class="article" t-att-data-oe-model="o._name" t-att-data-oe-id="o.id" t-att-data-oe-lang="lang">
+                    <t t-call="kai_account_invoice_ticket.report_invoice_ticket_document" t-lang="lang"/>
+                </div>
+            </t>
+        </t>
+    </template>
+</odoo>

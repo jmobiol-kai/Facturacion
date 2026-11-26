@@ -1,0 +1,152 @@
+# Translation of Odoo Server.
+# This file contains the translation of the following modules:
+# 	* kai_account_invoice_ticket
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Odoo Server 19.0\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-24 00:00+0000\n"
+"PO-Revision-Date: 2026-11-24 00:00+0000\n"
+"Last-Translator: Kaizendo\n"
+"Language-Team: Spanish (Argentina)\n"
+"Language: es_AR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. module: kai_account_invoice_ticket
+#: model:ir.actions.report,name:kai_account_invoice_ticket.action_report_invoice_ticket
+msgid "Imprimir ticket factura"
+msgstr "Imprimir ticket factura"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.view_move_form_invoice_ticket
+msgid "Ticket Factura"
+msgstr "Ticket Factura"
+
+#. module: kai_account_invoice_ticket
+#: model:ir.actions.report,print_report_name:kai_account_invoice_ticket.action_report_invoice_ticket
+msgid "'%s_ticket' % (object.name or 'Factura')"
+msgstr "'%s_ticket' % (object.name or 'Factura')"
+
+#. module: kai_account_invoice_ticket
+#: model:report.paperformat,name:kai_account_invoice_ticket.paperformat_invoice_ticket_80mm
+msgid "Ticket factura 80 mm"
+msgstr "Ticket factura 80 mm"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Atendido por:"
+msgstr "Atendido por:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Cod."
+msgstr "Cod."
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Fecha de vencimiento:"
+msgstr "Fecha de vencimiento:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Origen:"
+msgstr "Origen:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Referencia:"
+msgstr "Referencia:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Cond. IVA:"
+msgstr "Cond. IVA:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Subtotal"
+msgstr "Subtotal"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Total"
+msgstr "Total"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Redondeo"
+msgstr "Redondeo"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Descuentos"
+msgstr "Descuentos"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "de descuento en"
+msgstr "de descuento en"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Régimen de Transparencia Fiscal para el Consumidor Final (Ley 27.743)"
+msgstr "Régimen de Transparencia Fiscal para el Consumidor Final (Ley 27.743)"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "CAE:"
+msgstr "CAE:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Vencimiento CAE:"
+msgstr "Vencimiento CAE:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "IIBB:"
+msgstr "IIBB:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Inicio de las actividades:"
+msgstr "Inicio de las actividades:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Tel.:"
+msgstr "Tel.:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Con la tecnología de"
+msgstr "Con la tecnología de"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Odoo"
+msgstr "Odoo"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Nota:"
+msgstr "Nota:"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Descuento"
+msgstr "Descuento"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "Logo"
+msgstr "Logo"
+
+#. module: kai_account_invoice_ticket
+#: model_terms:ir.ui.view,arch_db:kai_account_invoice_ticket.report_invoice_ticket_document
+msgid "QR"
+msgstr "QR"
