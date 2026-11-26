@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_base_partner_update_from_padron_form_es" model="ir.ui.view">
+        <field name="name">res.partner.update.from.padron.wizard.form.kai.es</field>
+        <field name="model">res.partner.update.from.padron.wizard</field>
+        <field name="inherit_id" ref="l10n_ar_afipws.view_base_partner_update_from_padron_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//h2" position="replace">
+                <h2>No quedan más contactos para actualizar en esta solicitud.</h2>
+            </xpath>
+        </field>
+    </record>
+</odoo>

@@ -12,3 +12,13 @@ Este módulo, sin modificar ingadhoc:
   importe `WSSrPadronA5` en Python 3.12.
 
 Versión `19.0.1.0.0`. Depende de `l10n_ar_afipws`.
+
+En 19.0.1.1.0 el wizard «AFIP A5» también:
+
+- incluye `state_id` y `country_id` entre los campos a actualizar;
+- pone el país en Argentina y compara la provincia sin acentos (ARCA devuelve
+  «RIO NEGRO», Odoo tiene «Río Negro»);
+- convierte a entero los ids Many2one al grabar, porque en Odoo 19 un
+  `write({'l10n_ar_afip_responsibility_type_id': '6'})` queda en blanco;
+- muestra el mensaje final en español: «No quedan más contactos para actualizar
+  en esta solicitud.» (es el cierre normal del asistente, no un error).
