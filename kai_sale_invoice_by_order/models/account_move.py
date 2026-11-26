@@ -20,6 +20,54 @@ class AccountMove(models.Model):
             return "by_order"
         return "native"
 
+    def _kai_main_billing_partner(self):
+        """Cliente principal de la factura: commercial partner o partner_id.
+
+        ``partner_id`` de la factura ya es el ``partner_invoice_id`` del
+        pedido. Si ese contacto es un hijo, se usa el commercial partner
+        (p. ej. Bunge y no la sucursal de entrega).
+        """
+        self.ensure_one()
+        return self.partner_id.commercial_partner_id or self.partner_id
+
+    def _kai_align_header_from_grouped_orders(self):
+        """Ajusta entrega y vendedor cuando la factura junta pedidos distintos.
+
+        Si los pedidos agrupan distintas ``partner_shipping_id`` o distintos
+        ``user_id``:
+
+        * ``partner_shipping_id`` pasa a ser el cliente de facturación
+          principal (su propia dirección, no un hijo *delivery*).
+        * ``invoice_user_id`` y ``user_id`` pasan al vendedor de la ficha
+          de ese partner (``res.partner.user_id``).
+
+        Si la ficha no tiene vendedor, se deja el de la primera orden,
+        que es el que ya trajo ``_prepare_invoice`` al agrupar. Si todos
+        los pedidos comparten entrega y vendedor, no se cambia nada.
+        """
+        for move in self:
+            if move.state != "draft" or move.move_type not in ("out_invoice", "out_refund"):
+                continue
+            orders = move.invoice_line_ids.sale_line_ids.order_id
+            if len(orders) < 2:
+                continue
+            shipping_ids = {
+                order.partner_shipping_id.id if order.partner_shipping_id else False
+                for order in orders
+            }
+            user_ids = {
+                order.user_id.id if order.user_id else False
+                for order in orders
+            }
+            if len(shipping_ids) <= 1 and len(user_ids) <= 1:
+                continue
+            main = move._kai_main_billing_partner()
+            vals = {"partner_shipping_id": main.id}
+            if main.user_id:
+                vals["invoice_user_id"] = main.user_id.id
+                vals["user_id"] = main.user_id.id
+            move.write(vals)
+
     def _kai_consolidate_invoice_lines_by_sale_order(self):
         for move in self:
             if move.state != "draft" or move.move_type not in ("out_invoice", "out_refund"):

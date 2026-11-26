@@ -17,8 +17,17 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         cls.env = cls.env(su=True)
         cls.env.company.invoice_by_sale_order = True
 
-    def _make_order(self, partner, lines):
-        order = self.env["sale.order"].create({"partner_id": partner.id})
+    def _make_order(self, partner, lines, shipping=None, user=None, invoice_partner=None, commitment_date=None):
+        vals = {"partner_id": partner.id}
+        if invoice_partner is not None:
+            vals["partner_invoice_id"] = invoice_partner.id
+        if shipping is not None:
+            vals["partner_shipping_id"] = shipping.id
+        if user is not None:
+            vals["user_id"] = user.id
+        if commitment_date is not None:
+            vals["commitment_date"] = commitment_date
+        order = self.env["sale.order"].create(vals)
         for spec in lines:
             product, qty, price, taxes = spec[:4]
             extra = spec[4] if len(spec) > 4 else {}
@@ -1067,3 +1076,158 @@ class TestInvoiceBySaleOrder(TestSaleCommon):
         self.env["sale.order.line"]._kai_recompute_shared_invoice_qty()
         self.assertEqual(first.invoice_status, "invoiced")
         self.assertEqual(second.invoice_status, "invoiced")
+
+
+    def _sales_user(self, login, name):
+        group = self.env.ref("sales_team.group_sale_salesman")
+        user = self.env["res.users"].search([("login", "=", login)], limit=1)
+        if user:
+            return user
+        vals = {
+            "name": name,
+            "login": login,
+            "email": f"{login}@example.com",
+        }
+        # Odoo 19 usa group_ids; versiones anteriores, groups_id.
+        if "group_ids" in self.env["res.users"]._fields:
+            vals["group_ids"] = [Command.set(group.ids)]
+        else:
+            vals["groups_id"] = [Command.set(group.ids)]
+        return self.env["res.users"].create(vals)
+
+    def _delivery_child(self, parent, name, street):
+        return self.env["res.partner"].create({
+            "name": name,
+            "type": "delivery",
+            "parent_id": parent.id,
+            "street": street,
+        })
+
+    def test_grouping_keys_omit_shipping_address(self):
+        keys = self.env["sale.order"]._get_invoice_grouping_keys()
+        self.assertNotIn("partner_shipping_id", keys)
+        self.assertIn("company_id", keys)
+        self.assertIn("partner_id", keys)
+        self.assertIn("currency_id", keys)
+        self.assertNotIn("user_id", keys)
+        self.assertNotIn("invoice_user_id", keys)
+
+    def test_different_shipping_addresses_create_one_invoice(self):
+        tax = self.tax_sale_a
+        product = self.company_data["product_order_no"]
+        partner = self.partner_a
+        partner.user_id = False
+        ines = self._delivery_child(partner, "Ines - Ing. white", "Av. Maria Guido s/n")
+        laura = self._delivery_child(partner, "Laura Picchi - Paunero", "Paunero 280")
+        alem = self._sales_user("kai_alem_group", "Alem mañana")
+        pamela = self._sales_user("kai_pamela_group", "Pamela Piñero")
+        commitment = fields.Datetime.to_datetime("2026-11-19 15:00:00")
+        first = self._make_order(
+            partner, [(product, 2, 100.0, tax)],
+            shipping=ines, user=alem, invoice_partner=partner,
+            commitment_date=commitment,
+        )
+        second = self._make_order(
+            laura, [(product, 1, 80.0, tax)],
+            shipping=laura, user=pamela, invoice_partner=partner,
+            commitment_date=commitment,
+        )
+
+        invoices = (first | second)._create_invoices()
+        self.assertEqual(len(invoices), 1)
+        invoice = invoices
+        self.assertEqual(invoice.partner_id, partner)
+        self.assertEqual(invoice.partner_shipping_id, partner)
+        # La ficha del cliente no tiene vendedor: queda el de la primera orden.
+        self.assertEqual(invoice.invoice_user_id, alem)
+        sections = self._sections(invoice)
+        self.assertEqual(len(sections), 2)
+        self.assertEqual(set(sections.mapped("kai_sale_order_id")), {first, second})
+        self.assertEqual(invoice._kai_sale_order_section_date(first), commitment)
+        self.assertEqual(invoice._kai_sale_order_section_date(second), commitment)
+        self.assertIn(
+            f"{first.name} · {format_date(self.env, commitment)} · {first.partner_id.display_name}",
+            sections.mapped("name"),
+        )
+        self.assertIn(
+            f"{second.name} · {format_date(self.env, commitment)} · {second.partner_id.display_name}",
+            sections.mapped("name"),
+        )
+
+    def test_same_shipping_and_salesperson_keep_invoice_header(self):
+        tax = self.tax_sale_a
+        product = self.company_data["product_order_no"]
+        partner = self.partner_a
+        partner.user_id = False
+        ines = self._delivery_child(partner, "Ines shared", "Av. Maria Guido s/n")
+        alem = self._sales_user("kai_alem_keep", "Alem keep")
+        first = self._make_order(
+            partner, [(product, 2, 100.0, tax)],
+            shipping=ines, user=alem, invoice_partner=partner,
+        )
+        second = self._make_order(
+            partner, [(product, 1, 80.0, tax)],
+            shipping=ines, user=alem, invoice_partner=partner,
+        )
+
+        invoice = (first | second)._create_invoices()
+        self.assertEqual(len(invoice), 1)
+        self.assertEqual(invoice.partner_id, partner)
+        self.assertEqual(invoice.partner_shipping_id, ines)
+        self.assertEqual(invoice.invoice_user_id, alem)
+        self.assertEqual(len(self._sections(invoice)), 2)
+
+    def test_different_salesperson_uses_partner_user_and_main_address(self):
+        tax = self.tax_sale_a
+        product = self.company_data["product_order_no"]
+        partner = self.partner_a
+        ines = self._delivery_child(partner, "Ines only", "Av. Maria Guido s/n")
+        alem = self._sales_user("kai_alem_partner", "Alem partner")
+        pamela = self._sales_user("kai_pamela_partner", "Pamela partner")
+        owner = self._sales_user("kai_bunge_owner", "Vendedor ficha")
+        partner.user_id = owner
+        first = self._make_order(
+            partner, [(product, 2, 100.0, tax)],
+            shipping=ines, user=alem, invoice_partner=partner,
+        )
+        second = self._make_order(
+            partner, [(product, 1, 80.0, tax)],
+            shipping=ines, user=pamela, invoice_partner=partner,
+        )
+
+        invoice = (first | second)._create_invoices()
+        self.assertEqual(len(invoice), 1)
+        # Aunque la entrega coincida, al diferir el vendedor se usa la
+        # dirección del cliente principal y el vendedor de su ficha.
+        self.assertEqual(invoice.partner_shipping_id, partner)
+        self.assertEqual(invoice.invoice_user_id, owner)
+        self.assertEqual(invoice.user_id, owner)
+        self.assertEqual(len(self._sections(invoice)), 2)
+        partner.user_id = False
+
+    def test_different_shipping_with_partner_salesperson(self):
+        tax = self.tax_sale_a
+        product = self.company_data["product_order_no"]
+        partner = self.partner_a
+        ines = self._delivery_child(partner, "Ines dest", "Av. Maria Guido s/n")
+        laura = self._delivery_child(partner, "Laura dest", "Paunero 280")
+        alem = self._sales_user("kai_alem_dest", "Alem dest")
+        pamela = self._sales_user("kai_pamela_dest", "Pamela dest")
+        owner = self._sales_user("kai_owner_dest", "Vendedor destino")
+        partner.user_id = owner
+        first = self._make_order(
+            partner, [(product, 2, 100.0, tax)],
+            shipping=ines, user=alem, invoice_partner=partner,
+        )
+        second = self._make_order(
+            partner, [(product, 1, 80.0, tax)],
+            shipping=laura, user=pamela, invoice_partner=partner,
+        )
+
+        invoice = (first | second)._create_invoices()
+        self.assertEqual(len(invoice), 1)
+        self.assertEqual(invoice.partner_id, partner)
+        self.assertEqual(invoice.partner_shipping_id, partner)
+        self.assertEqual(invoice.invoice_user_id, owner)
+        self.assertEqual(invoice.user_id, owner)
+        partner.user_id = False

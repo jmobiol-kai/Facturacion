@@ -1,7 +1,7 @@
 {
     "name": "Factura: una línea por pedido de venta",
     "summary": "Al facturar pedidos de venta, una sección por pedido con los productos en el asiento (el PDF muestra un importe por pedido), una línea por producto, o el detalle sin consolidar.",
-    "version": "19.0.1.3.1",
+    "version": "19.0.1.4.0",
     "category": "Sales/Sales",
     "author": "Mariano Boisselier",
     "license": "LGPL-3",
