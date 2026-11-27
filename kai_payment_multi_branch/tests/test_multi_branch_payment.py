@@ -1,62 +1,147 @@
 from datetime import timedelta
 from unittest.mock import patch
 
-from odoo import Command, _, fields
-from odoo.addons.account.tests.common import AccountTestInvoicingCommon
+from odoo import SUPERUSER_ID, Command, _, api, fields
 from odoo.exceptions import UserError
-from odoo.tests import tagged
+from odoo.tests import TransactionCase, tagged
 
 DEBT_TYPES = ("asset_receivable", "liability_payable")
 
 
 @tagged("post_install", "-at_install")
-class TestMultiBranchPayment(AccountTestInvoicingCommon):
+class TestMultiBranchPayment(TransactionCase):
+    """Pagos y recibos entre sucursales de la misma entidad.
+
+    No hereda ``AccountTestInvoicingCommon``. Esa clase pasa por
+    ``BaseCommon``, que cambia el entorno a un usuario de test, y por
+    ``UomCommon``, que hace ``uom_dozen.active = True``. En Odoo 19 esa
+    asignación llama a ``write()``, y ``write()`` controla el acceso antes
+    de mirar si el valor cambió. En 00blinis la escritura de ``uom.uom`` la
+    da un grupo custom sin xmlid, no ``uom.group_uom``. ``TransactionCase``
+    deja el superusuario y el control de acceso no corre.
+
+    La casa central, Yesterday, Fisa, los diarios, las cuentas, el proveedor
+    y el cliente se crean en esta transacción. Cada test arma sus facturas.
+    """
 
     @classmethod
-    @AccountTestInvoicingCommon.setup_country("ar")
-    @AccountTestInvoicingCommon.setup_chart_template("ar_ri")
     def setUpClass(cls):
         super().setUpClass()
-        cls.env = cls.env(su=True)
-        cls.company = cls.env.company
-        cls.company.use_payment_pro = True
-        # CUIT válido. En una base con el plan argentino el contacto ya es CUIT
-        # y un dígito verificador mal formado (el 30712345679 anterior) corta
-        # el setUpClass al crear las sucursales.
+        cls.env = api.Environment(cls.cr, SUPERUSER_ID, {})
+        currency = cls.env.ref("base.ARS", raise_if_not_found=False) or cls.env.company.currency_id
+        if currency and not currency.active:
+            currency.active = True
+        country = cls.env.ref("base.ar", raise_if_not_found=False)
+        cls.company = cls.env["res.company"].with_context(no_vat_validation=True).create({
+            "name": "Casa central test",
+            "currency_id": currency.id,
+            "country_id": country.id if country else False,
+        })
+        cls.env = api.Environment(cls.cr, SUPERUSER_ID, {"allowed_company_ids": [cls.company.id]})
+        cls.company = cls.env["res.company"].browse(cls.company.id)
+        if "use_payment_pro" in cls.company._fields:
+            cls.company.use_payment_pro = True
+        # CUIT válido. Un dígito verificador mal formado corta el alta de las sucursales.
         cls.company.with_context(no_vat_validation=True).vat = "30111111118"
         cls._identify_as_cuit(cls.company.partner_id)
-        cls.bank_journal = cls.env["account.journal"].browse(cls.company_data["default_journal_bank"].id)
+        responsibility = cls.env.ref("l10n_ar.res_IVARI", raise_if_not_found=False)
+        if responsibility and "l10n_ar_afip_responsibility_type_id" in cls.company._fields:
+            cls.company.l10n_ar_afip_responsibility_type_id = responsibility
         cls.yesterday = cls._branch("Yesterday")
         cls.fisa = cls._branch("Fisa")
         cls.env.flush_all()
         cls.cr.precommit.run()
-        cls._ensure_general_journal(cls.company)
-        cls._ensure_general_journal(cls.yesterday)
-        cls._ensure_general_journal(cls.fisa)
         companies = cls.company | cls.yesterday | cls.fisa
-        cls.cc_branches = cls.env["account.account"].create({
-            "name": "Cuenta corriente con sucursales",
-            "code": "91190001",
-            "account_type": "asset_current",
-            "reconcile": False,
-            "company_ids": [Command.set(companies.ids)],
-        })
-        cls.cc_central = cls.env["account.account"].create({
-            "name": "Cuenta corriente con casa central",
-            "code": "92190001",
-            "account_type": "liability_current",
-            "reconcile": False,
-            "company_ids": [Command.set(companies.ids)],
-        })
+        cls.env = api.Environment(cls.cr, SUPERUSER_ID, {"allowed_company_ids": companies.ids})
+        cls.company = cls.env["res.company"].browse(cls.company.id)
+        cls.yesterday = cls.env["res.company"].browse(cls.yesterday.id)
+        cls.fisa = cls.env["res.company"].browse(cls.fisa.id)
+        companies = cls.company | cls.yesterday | cls.fisa
+        for company in companies:
+            if "use_payment_pro" in company._fields:
+                company.use_payment_pro = True
+            cls._ensure_general_journal(company)
+        cls.expense_account = cls._shared_account(companies, "Gastos test", "expense")
+        cls.revenue_account = cls._shared_account(companies, "Ingresos test", "income")
+        cls.payable_account = cls._shared_account(
+            companies, "Proveedores test", "liability_payable", reconcile=True,
+        )
+        cls.receivable_account = cls._shared_account(
+            companies, "Clientes test", "asset_receivable", reconcile=True,
+        )
+        cls.bank_account = cls._shared_account(companies, "Banco test", "asset_cash")
+        journal_vals = {
+            "name": "Banco casa central",
+            "code": "BCT1",
+            "type": "bank",
+            "company_id": cls.company.id,
+            "default_account_id": cls.bank_account.id,
+        }
+        journal_model = cls.env["account.journal"]
+        if "suspense_account_id" in journal_model._fields:
+            journal_vals["suspense_account_id"] = cls._shared_account(
+                companies, "Suspenso banco test", "asset_current",
+            ).id
+        cls.bank_journal = journal_model.with_company(cls.company).create(journal_vals)
+        # Sin estas cuentas el pago no puede armar la línea de liquidez.
+        outstanding_out = cls._shared_account(
+            cls.company, "Pagos pendientes test", "asset_current", reconcile=True,
+        )
+        outstanding_in = cls._shared_account(
+            cls.company, "Cobros pendientes test", "asset_current", reconcile=True,
+        )
+        if "account_journal_payment_credit_account_id" in cls.company._fields:
+            cls.company.account_journal_payment_credit_account_id = outstanding_out
+        if "account_journal_payment_debit_account_id" in cls.company._fields:
+            cls.company.account_journal_payment_debit_account_id = outstanding_in
+        cls.cc_branches = cls._shared_account(
+            companies, "Cuenta corriente con sucursales", "asset_current",
+        )
+        cls.cc_central = cls._shared_account(
+            companies, "Cuenta corriente con casa central", "liability_current",
+        )
         cls.company.kai_branch_current_account_id = cls.cc_branches
         cls.yesterday.kai_central_current_account_id = cls.cc_central
         cls.fisa.kai_central_current_account_id = cls.cc_central
-        cls.vendor = cls.env["res.partner"].create({"name": "Proveedor multi sucursal"})
-        cls.customer = cls.env["res.partner"].create({"name": "Cliente multi sucursal"})
+        cls.vendor = cls.env["res.partner"].create({
+            "name": "Proveedor multi sucursal",
+            "supplier_rank": 1,
+            "company_id": False,
+        })
+        cls.customer = cls.env["res.partner"].create({
+            "name": "Cliente multi sucursal",
+            "customer_rank": 1,
+            "company_id": False,
+        })
         cls._identify_as_cuit(cls.vendor, "20111111112")
         cls._identify_as_cuit(cls.customer, "20222222223")
+        for company in companies:
+            vendor = cls.vendor.with_company(company)
+            customer = cls.customer.with_company(company)
+            vendor.property_account_payable_id = cls.payable_account
+            vendor.property_account_receivable_id = cls.receivable_account
+            customer.property_account_payable_id = cls.payable_account
+            customer.property_account_receivable_id = cls.receivable_account
         cls.wth_tax = cls.env["account.tax"]
         cls.wth_account = cls.env["account.account"]
+
+    def setUp(self):
+        super().setUp()
+        companies = self.company | self.yesterday | self.fisa
+        self.env = self.env(context=dict(self.env.context, allowed_company_ids=companies.ids))
+
+    @classmethod
+    def _shared_account(cls, companies, name, account_type, reconcile=False):
+        account_model = cls.env["account.account"].with_company(companies[:1])
+        vals = {
+            "name": name,
+            "code": account_model._search_new_account_code("91100000", cache=set()),
+            "account_type": account_type,
+            "company_ids": [Command.set(companies.ids)],
+        }
+        if reconcile:
+            vals["reconcile"] = True
+        return account_model.create(vals)
 
     @classmethod
     def _identify_as_cuit(cls, partner, vat=None):
@@ -83,6 +168,7 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
             "name": name,
             "parent_id": cls.company.id,
             "vat": cls.company.vat,
+            "currency_id": cls.company.currency_id.id,
             "country_id": cls.company.country_id.id,
         }
         if (
@@ -116,31 +202,34 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         comprobante, así que usan un diario que no documenta.
         """
         journal_model = self.env["account.journal"]
-        if "l10n_latam_use_documents" not in journal_model._fields:
-            return journal_model
-        if not company._localization_use_documents():
-            return journal_model
         journal_type = "purchase" if move_type in ("in_invoice", "in_refund") else "sale"
-        journal = journal_model.search([
+        domain = [
             ("company_id", "=", company.id),
             ("type", "=", journal_type),
-            ("l10n_latam_use_documents", "=", False),
-        ], limit=1)
+        ]
+        if (
+            "l10n_latam_use_documents" in journal_model._fields
+            and company._localization_use_documents()
+        ):
+            domain.append(("l10n_latam_use_documents", "=", False))
+        journal = journal_model.search(domain, limit=1)
         if journal:
             return journal
-        return journal_model.create({
+        vals = {
             "name": "Compras internas" if journal_type == "purchase" else "Ventas internas",
             "code": "CINT" if journal_type == "purchase" else "VINT",
             "type": journal_type,
             "company_id": company.id,
-            "l10n_latam_use_documents": False,
-        })
+        }
+        if "l10n_latam_use_documents" in journal_model._fields:
+            vals["l10n_latam_use_documents"] = False
+        return journal_model.with_company(company).create(vals)
 
     def _invoice(self, company, move_type, partner, amount):
         account = (
-            self.company_data["default_account_expense"]
+            self.expense_account
             if move_type in ("in_invoice", "in_refund")
-            else self.company_data["default_account_revenue"]
+            else self.revenue_account
         )
         vals = {
             "move_type": move_type,
@@ -195,9 +284,11 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         line = self.bank_journal.outbound_payment_method_line_ids.filtered("payment_account_id")[:1]
         if line:
             return line.payment_account_id
-        return self.env["account.account"].create({
+        return self.env["account.account"].with_company(self.company).create({
             "name": "Cheques propios a debitar",
-            "code": "91180001",
+            "code": self.env["account.account"].with_company(self.company)._search_new_account_code(
+                "91180000", cache=set(),
+            ),
             "account_type": "asset_current",
             "reconcile": True,
             "company_ids": [Command.set(self.company.ids)],
@@ -251,9 +342,11 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         journal = getattr(self, "checks_journal", self.env["account.journal"])
         if journal:
             return journal
-        account = self.env["account.account"].create({
+        account = self.env["account.account"].with_company(self.company).create({
             "name": "Cheques de terceros en cartera",
-            "code": "11130001",
+            "code": self.env["account.account"].with_company(self.company)._search_new_account_code(
+                "11130000", cache=set(),
+            ),
             "account_type": "asset_current",
             "reconcile": True,
             "company_ids": [Command.set(self.company.ids)],
@@ -362,16 +455,17 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         if self.wth_tax:
             return self.wth_tax
         companies = self.company | self.yesterday | self.fisa
-        self.wth_account = self.env["account.account"].create({
+        account_model = self.env["account.account"].with_company(self.company)
+        self.wth_account = account_model.create({
             "name": "Retención ganancias a depositar",
-            "code": "21420001",
+            "code": account_model._search_new_account_code("21420000", cache=set()),
             "account_type": "liability_current",
             "reconcile": False,
             "company_ids": [Command.set(self.company.ids)],
         })
-        base_account = self.env["account.account"].create({
+        base_account = account_model.create({
             "name": "Base de retenciones",
-            "code": "21420002",
+            "code": account_model._search_new_account_code("21420000", cache=set()),
             "account_type": "liability_current",
             "reconcile": False,
             "company_ids": [Command.set(companies.ids)],
