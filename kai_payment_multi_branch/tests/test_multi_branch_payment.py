@@ -6,6 +6,9 @@ from odoo.exceptions import UserError
 from odoo.tests import TransactionCase, tagged
 
 DEBT_TYPES = ("asset_receivable", "liability_payable")
+# El nombre de res.company es único en toda la base. 00blinis ya tiene
+# Yesterday y Fisa. El sufijo deja estos registros fuera de esos datos.
+TEST_TAG = "KTEST"
 
 
 @tagged("post_install", "-at_install")
@@ -33,7 +36,7 @@ class TestMultiBranchPayment(TransactionCase):
             currency.active = True
         country = cls.env.ref("base.ar", raise_if_not_found=False)
         cls.company = cls.env["res.company"].with_context(no_vat_validation=True).create({
-            "name": "Casa central test",
+            "name": cls._test_name("Casa central"),
             "currency_id": currency.id,
             "country_id": country.id if country else False,
         })
@@ -71,8 +74,8 @@ class TestMultiBranchPayment(TransactionCase):
         )
         cls.bank_account = cls._shared_account(companies, "Banco test", "asset_cash")
         journal_vals = {
-            "name": "Banco casa central",
-            "code": "BCT1",
+            "name": cls._test_name("Banco casa central"),
+            "code": cls._free_journal_code(cls.company, "BCT1"),
             "type": "bank",
             "company_id": cls.company.id,
             "default_account_id": cls.bank_account.id,
@@ -104,12 +107,12 @@ class TestMultiBranchPayment(TransactionCase):
         cls.yesterday.kai_central_current_account_id = cls.cc_central
         cls.fisa.kai_central_current_account_id = cls.cc_central
         cls.vendor = cls.env["res.partner"].create({
-            "name": "Proveedor multi sucursal",
+            "name": cls._test_name("Proveedor multi sucursal"),
             "supplier_rank": 1,
             "company_id": False,
         })
         cls.customer = cls.env["res.partner"].create({
-            "name": "Cliente multi sucursal",
+            "name": cls._test_name("Cliente multi sucursal"),
             "customer_rank": 1,
             "company_id": False,
         })
@@ -134,7 +137,8 @@ class TestMultiBranchPayment(TransactionCase):
     def _shared_account(cls, companies, name, account_type, reconcile=False):
         account_model = cls.env["account.account"].with_company(companies[:1])
         vals = {
-            "name": name,
+            "name": cls._test_name(name),
+            # El código es único por compañía (y su jerarquía). Se pide uno libre.
             "code": account_model._search_new_account_code("91100000", cache=set()),
             "account_type": account_type,
             "company_ids": [Command.set(companies.ids)],
@@ -163,9 +167,28 @@ class TestMultiBranchPayment(TransactionCase):
             partner.with_context(no_vat_validation=True).write(vals)
 
     @classmethod
+    def _test_name(cls, name):
+        return f"{name} {TEST_TAG}"
+
+    @classmethod
+    def _free_journal_code(cls, company, preferred):
+        """Código de diario libre en esa compañía. El índice es (compañía, código)."""
+        taken = set(cls.env["account.journal"].with_context(active_test=False).search([
+            ("company_id", "=", company.id),
+        ]).mapped("code"))
+        preferred = (preferred or "").upper()[:5]
+        if preferred and preferred not in taken:
+            return preferred
+        for index in range(1, 10000):
+            code = f"K{index:04d}"[:5]
+            if code not in taken:
+                return code
+        raise AssertionError(f"No hay código de diario libre en {company.display_name}")
+
+    @classmethod
     def _branch(cls, name):
         vals = {
-            "name": name,
+            "name": cls._test_name(name),
             "parent_id": cls.company.id,
             "vat": cls.company.vat,
             "currency_id": cls.company.currency_id.id,
@@ -187,9 +210,9 @@ class TestMultiBranchPayment(TransactionCase):
             ("type", "=", "general"),
         ], limit=1)
         if not journal:
-            cls.env["account.journal"].create({
+            cls.env["account.journal"].with_company(company).create({
                 "name": "Operaciones varias",
-                "code": "OPV",
+                "code": cls._free_journal_code(company, "OPV"),
                 "type": "general",
                 "company_id": company.id,
             })
@@ -216,8 +239,8 @@ class TestMultiBranchPayment(TransactionCase):
         if journal:
             return journal
         vals = {
-            "name": "Compras internas" if journal_type == "purchase" else "Ventas internas",
-            "code": "CINT" if journal_type == "purchase" else "VINT",
+            "name": self._test_name("Compras internas" if journal_type == "purchase" else "Ventas internas"),
+            "code": self._free_journal_code(company, "CINT" if journal_type == "purchase" else "VINT"),
             "type": journal_type,
             "company_id": company.id,
         }
@@ -285,7 +308,7 @@ class TestMultiBranchPayment(TransactionCase):
         if line:
             return line.payment_account_id
         return self.env["account.account"].with_company(self.company).create({
-            "name": "Cheques propios a debitar",
+            "name": self._test_name("Cheques propios a debitar"),
             "code": self.env["account.account"].with_company(self.company)._search_new_account_code(
                 "91180000", cache=set(),
             ),
@@ -328,9 +351,10 @@ class TestMultiBranchPayment(TransactionCase):
         return payment
 
     def _check_bank(self):
-        bank = self.env["res.bank"].search([("name", "=", "Banco cheques test")], limit=1)
+        bank_name = self._test_name("Banco cheques")
+        bank = self.env["res.bank"].search([("name", "=", bank_name)], limit=1)
         if not bank:
-            bank = self.env["res.bank"].create({"name": "Banco cheques test"})
+            bank = self.env["res.bank"].create({"name": bank_name})
         return bank
 
     def _method_line(self, journal, code):
@@ -343,7 +367,7 @@ class TestMultiBranchPayment(TransactionCase):
         if journal:
             return journal
         account = self.env["account.account"].with_company(self.company).create({
-            "name": "Cheques de terceros en cartera",
+            "name": self._test_name("Cheques de terceros en cartera"),
             "code": self.env["account.account"].with_company(self.company)._search_new_account_code(
                 "11130000", cache=set(),
             ),
@@ -353,8 +377,8 @@ class TestMultiBranchPayment(TransactionCase):
         })
         self.third_party_account = account
         journal = self.env["account.journal"].create({
-            "name": "Cartera cheques de terceros",
-            "code": "CH3",
+            "name": self._test_name("Cartera cheques de terceros"),
+            "code": self._free_journal_code(self.company, "CH3"),
             "type": "cash",
             "company_id": self.company.id,
         })
@@ -457,14 +481,14 @@ class TestMultiBranchPayment(TransactionCase):
         companies = self.company | self.yesterday | self.fisa
         account_model = self.env["account.account"].with_company(self.company)
         self.wth_account = account_model.create({
-            "name": "Retención ganancias a depositar",
+            "name": self._test_name("Retención ganancias a depositar"),
             "code": account_model._search_new_account_code("21420000", cache=set()),
             "account_type": "liability_current",
             "reconcile": False,
             "company_ids": [Command.set(self.company.ids)],
         })
         base_account = account_model.create({
-            "name": "Base de retenciones",
+            "name": self._test_name("Base de retenciones"),
             "code": account_model._search_new_account_code("21420000", cache=set()),
             "account_type": "liability_current",
             "reconcile": False,
@@ -746,7 +770,7 @@ class TestMultiBranchPayment(TransactionCase):
 
     def test_other_legal_entity_is_rejected(self):
         other = self.env["res.company"].with_context(no_vat_validation=True).create({
-            "name": "Otra SA",
+            "name": self._test_name("Otra SA"),
             "parent_id": self.company.id,
             "vat": "30987654321",
             "country_id": self.company.country_id.id,
@@ -1063,7 +1087,7 @@ class TestMultiBranchPayment(TransactionCase):
         self.assertTrue(by_payment[legacy].eligible)
         self.assertFalse(by_payment[own_payment].eligible)
         self.assertIn("otra sucursal", by_payment[own_payment].reason)
-        other_vendor = self.env["res.partner"].create({"name": "Proveedor bloqueado"})
+        other_vendor = self.env["res.partner"].create({"name": self._test_name("Proveedor bloqueado")})
         blocked = self._legacy_payment(
             "supplier",
             other_vendor,
@@ -1093,16 +1117,16 @@ class TestMultiBranchPayment(TransactionCase):
 
     def test_bridge_journal_uses_miscellaneous_not_point_of_sale(self):
         company = self.yesterday
-        self.env["account.journal"].create({
+        self.env["account.journal"].with_company(company).create({
             "name": "Punto de venta",
-            "code": "POSS",
+            "code": self._free_journal_code(company, "POSS"),
             "type": "general",
             "company_id": company.id,
             "sequence": 1,
         })
-        misce = self.env["account.journal"].create({
+        misce = self.env["account.journal"].with_company(company).create({
             "name": "Operaciones misceláneas",
-            "code": "MISCE",
+            "code": self._free_journal_code(company, "MISCE"),
             "type": "general",
             "company_id": company.id,
             "sequence": 50,
@@ -1117,9 +1141,9 @@ class TestMultiBranchPayment(TransactionCase):
         payment.action_post()
         self.assertEqual(payment.kai_bridge_move_ids.journal_id, misce)
 
-        custom = self.env["account.journal"].create({
-            "name": "Puentes sucursal",
-            "code": "PUEN",
+        custom = self.env["account.journal"].with_company(company).create({
+            "name": self._test_name("Puentes sucursal"),
+            "code": self._free_journal_code(company, "PUEN"),
             "type": "general",
             "company_id": company.id,
         })
@@ -1136,9 +1160,9 @@ class TestMultiBranchPayment(TransactionCase):
         ]):
             if not self.env["account.payment"]._kai_journal_is_reserved(journal):
                 journal.active = False
-        self.env["account.journal"].create({
+        self.env["account.journal"].with_company(self.fisa).create({
             "name": "Punto de venta",
-            "code": "POSS",
+            "code": self._free_journal_code(self.fisa, "POSS"),
             "type": "general",
             "company_id": self.fisa.id,
             "sequence": 1,
@@ -1226,9 +1250,9 @@ class TestMultiBranchPayment(TransactionCase):
         payment = self._payment("supplier", self.vendor, lines)
         payment.action_post()
         user = self.env["res.users"].create({
-            "name": "Contable central",
-            "login": "contable_central_mb",
-            "email": "contable_central_mb@example.com",
+            "name": self._test_name("Contable central"),
+            "login": "contable_central_ktest",
+            "email": "contable_central_ktest@example.com",
             "company_id": self.company.id,
             "company_ids": [Command.set(self.company.ids)],
             "group_ids": [Command.set([
