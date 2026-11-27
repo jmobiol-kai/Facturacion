@@ -72,7 +72,9 @@ class TestMultiBranchPayment(TransactionCase):
         cls.receivable_account = cls._shared_account(
             companies, "Clientes test", "asset_receivable", reconcile=True,
         )
-        cls.bank_account = cls._shared_account(companies, "Banco test", "asset_cash")
+        # Banco y efectivo no se comparten: la cuenta es solo de la casa central,
+        # que es la compañía del diario.
+        cls.bank_account = cls._company_account(cls.company, "Banco test", "asset_cash")
         journal_vals = {
             "name": cls._test_name("Banco casa central"),
             "code": cls._free_journal_code(cls.company, "BCT1"),
@@ -82,8 +84,8 @@ class TestMultiBranchPayment(TransactionCase):
         }
         journal_model = cls.env["account.journal"]
         if "suspense_account_id" in journal_model._fields:
-            journal_vals["suspense_account_id"] = cls._shared_account(
-                companies, "Suspenso banco test", "asset_current",
+            journal_vals["suspense_account_id"] = cls._company_account(
+                cls.company, "Suspenso banco test", "asset_current",
             ).id
         cls.bank_journal = journal_model.with_company(cls.company).create(journal_vals)
         # Sin estas cuentas el pago no puede armar la línea de liquidez.
@@ -134,11 +136,20 @@ class TestMultiBranchPayment(TransactionCase):
         self.env = self.env(context=dict(self.env.context, allowed_company_ids=companies.ids))
 
     @classmethod
+    def _company_account(cls, company, name, account_type, reconcile=False):
+        """Cuenta de una sola compañía. Banco y efectivo tienen que ir por acá."""
+        return cls._shared_account(company, name, account_type, reconcile=reconcile)
+
+    @classmethod
     def _shared_account(cls, companies, name, account_type, reconcile=False):
+        if account_type == "asset_cash" and len(companies) > 1:
+            raise AssertionError(
+                "Una cuenta de banco o efectivo no se puede compartir entre compañías."
+            )
         account_model = cls.env["account.account"].with_company(companies[:1])
         vals = {
             "name": cls._test_name(name),
-            # El código es único por compañía (y su jerarquía). Se pide uno libre.
+            # El código es único dentro de la compañía y de su jerarquía.
             "code": account_model._search_new_account_code("91100000", cache=set()),
             "account_type": account_type,
             "company_ids": [Command.set(companies.ids)],

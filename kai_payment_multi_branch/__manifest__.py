@@ -27,7 +27,7 @@ Depende de account_payment_pro, l10n_ar_tax y l10n_latam_check_ux para que
 el reparto entre sucursales corra después del ajuste de retenciones y de
 las líneas de cheques. No envía correos ni trámites de AFIP.
 """,
-    "version": "19.0.1.3.2",
+    "version": "19.0.1.3.3",
     "category": "Accounting/Accounting",
     "author": "Kaizendo",
     "license": "LGPL-3",
