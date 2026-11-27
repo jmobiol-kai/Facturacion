@@ -248,7 +248,6 @@ class TestMultiBranchPayment(TransactionCase):
             country = company.country_id or self.env.ref("base.ar", raise_if_not_found=False)
             if country:
                 company.account_fiscal_country_id = country
-        self._ensure_general_journal(company)
         payable = self.payable_account if company in self.payable_account.company_ids else self.env["account.account"]
         receivable = self.receivable_account if company in self.receivable_account.company_ids else self.env["account.account"]
         if not payable:

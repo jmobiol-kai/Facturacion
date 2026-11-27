@@ -746,6 +746,30 @@ class AccountPayment(models.Model):
         _liquidity, counterpart, _writeoff = self._seek_for_lines()
         return self.company_currency_id.round(sum(counterpart.mapped("balance")))
 
+    def _kai_selected_debt_balance(self, allocations):
+        """Deuda seleccionada, incluida la de la casa central ya conciliada.
+
+        ``_reconcile_after_post`` cierra la deuda de la compañía del pago
+        antes de crear los puentes y su residual queda en cero. Esa parte
+        sigue en la línea a pagar del asiento. Si no se suma, el bruto menos
+        el residual abierto de las sucursales parece un anticipo.
+        """
+        self.ensure_one()
+        currency = self.company_currency_id
+        foreign = currency.round(sum(
+            balance for line, balance in allocations if line.company_id != self.company_id
+        ))
+        own_open = currency.round(sum(
+            balance for line, balance in allocations if line.company_id == self.company_id
+        ))
+        if not currency.is_zero(own_open):
+            return currency.round(foreign + own_open)
+        valid_types = set(self._get_valid_payment_account_types())
+        own_settled = currency.round(sum(self.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type in valid_types and not line.kai_settled_company_id
+        ).mapped("balance")))
+        return currency.round(foreign + own_settled)
+
     def _kai_advance_account(self, company, debt_lines):
         """Cuenta a pagar o cobrar donde queda abierto el anticipo de la sucursal."""
         self.ensure_one()
@@ -776,7 +800,7 @@ class AccountPayment(models.Model):
                 continue
             currency = payment.company_currency_id
             allocations = payment._kai_debt_allocations()
-            debt_balance = currency.round(sum(balance for _line, balance in allocations))
+            debt_balance = payment._kai_selected_debt_balance(allocations)
             gross = payment._kai_move_counterpart_balance()
             kind, advance_balance = payment._kai_classify_coverage(gross, debt_balance)
             if kind == "partial":
