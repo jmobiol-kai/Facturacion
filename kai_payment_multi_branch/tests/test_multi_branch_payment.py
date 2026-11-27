@@ -50,6 +50,9 @@ class TestMultiBranchPayment(TransactionCase):
         responsibility = cls.env.ref("l10n_ar.res_IVARI", raise_if_not_found=False)
         if responsibility and "l10n_ar_afip_responsibility_type_id" in cls.company._fields:
             cls.company.l10n_ar_afip_responsibility_type_id = responsibility
+        # El plan se carga como superusuario, sin pasar por UomCommon.
+        # Las sucursales heredan el chart_template del padre al crearse.
+        cls._load_chart(cls.company)
         cls.yesterday = cls._branch("Yesterday")
         cls.fisa = cls._branch("Fisa")
         cls.env.flush_all()
@@ -60,45 +63,27 @@ class TestMultiBranchPayment(TransactionCase):
         cls.yesterday = cls.env["res.company"].browse(cls.yesterday.id)
         cls.fisa = cls.env["res.company"].browse(cls.fisa.id)
         companies = cls.company | cls.yesterday | cls.fisa
+        ar = cls.env.ref("base.ar", raise_if_not_found=False)
         for company in companies:
+            cls._load_chart(company)
+            if ar and "account_fiscal_country_id" in company._fields:
+                company.account_fiscal_country_id = ar
+            if responsibility and "l10n_ar_afip_responsibility_type_id" in company._fields:
+                if not company.l10n_ar_afip_responsibility_type_id:
+                    company.l10n_ar_afip_responsibility_type_id = responsibility
             if "use_payment_pro" in company._fields:
                 company.use_payment_pro = True
             cls._ensure_general_journal(company)
-        cls.expense_account = cls._shared_account(companies, "Gastos test", "expense")
-        cls.revenue_account = cls._shared_account(companies, "Ingresos test", "income")
-        cls.payable_account = cls._shared_account(
-            companies, "Proveedores test", "liability_payable", reconcile=True,
+        cls.expense_account = cls._chart_or_shared(companies, "expense", "Gastos test")
+        cls.revenue_account = cls._chart_or_shared(companies, "income", "Ingresos test")
+        cls.payable_account = cls._chart_or_shared(
+            companies, "liability_payable", "Proveedores test", reconcile=True,
         )
-        cls.receivable_account = cls._shared_account(
-            companies, "Clientes test", "asset_receivable", reconcile=True,
+        cls.receivable_account = cls._chart_or_shared(
+            companies, "asset_receivable", "Clientes test", reconcile=True,
         )
-        # Banco y efectivo no se comparten: la cuenta es solo de la casa central,
-        # que es la compañía del diario.
-        cls.bank_account = cls._company_account(cls.company, "Banco test", "asset_cash")
-        journal_vals = {
-            "name": cls._test_name("Banco casa central"),
-            "code": cls._free_journal_code(cls.company, "BCT1"),
-            "type": "bank",
-            "company_id": cls.company.id,
-            "default_account_id": cls.bank_account.id,
-        }
-        journal_model = cls.env["account.journal"]
-        if "suspense_account_id" in journal_model._fields:
-            journal_vals["suspense_account_id"] = cls._company_account(
-                cls.company, "Suspenso banco test", "asset_current",
-            ).id
-        cls.bank_journal = journal_model.with_company(cls.company).create(journal_vals)
-        # Sin estas cuentas el pago no puede armar la línea de liquidez.
-        outstanding_out = cls._shared_account(
-            cls.company, "Pagos pendientes test", "asset_current", reconcile=True,
-        )
-        outstanding_in = cls._shared_account(
-            cls.company, "Cobros pendientes test", "asset_current", reconcile=True,
-        )
-        if "account_journal_payment_credit_account_id" in cls.company._fields:
-            cls.company.account_journal_payment_credit_account_id = outstanding_out
-        if "account_journal_payment_debit_account_id" in cls.company._fields:
-            cls.company.account_journal_payment_debit_account_id = outstanding_in
+        cls.bank_journal, cls.bank_account = cls._bank_journal(cls.company)
+        cls._wire_outstanding(cls.bank_journal)
         cls.cc_branches = cls._shared_account(
             companies, "Cuenta corriente con sucursales", "asset_current",
         )
@@ -121,12 +106,9 @@ class TestMultiBranchPayment(TransactionCase):
         cls._identify_as_cuit(cls.vendor, "20111111112")
         cls._identify_as_cuit(cls.customer, "20222222223")
         for company in companies:
-            vendor = cls.vendor.with_company(company)
-            customer = cls.customer.with_company(company)
-            vendor.property_account_payable_id = cls.payable_account
-            vendor.property_account_receivable_id = cls.receivable_account
-            customer.property_account_payable_id = cls.payable_account
-            customer.property_account_receivable_id = cls.receivable_account
+            cls._set_debt_defaults(company, cls.payable_account, cls.receivable_account)
+            for partner in (cls.vendor, cls.customer):
+                cls._set_partner_debt_accounts(company, partner, cls.payable_account, cls.receivable_account)
         cls.wth_tax = cls.env["account.tax"]
         cls.wth_account = cls.env["account.account"]
 
@@ -134,6 +116,159 @@ class TestMultiBranchPayment(TransactionCase):
         super().setUp()
         companies = self.company | self.yesterday | self.fisa
         self.env = self.env(context=dict(self.env.context, allowed_company_ids=companies.ids))
+
+    @classmethod
+    def _load_chart(cls, company):
+        """Plan de la compañía, el mismo ar_ri que usaba AccountTestInvoicingCommon."""
+        if company.chart_template:
+            return
+        country = company.account_fiscal_country_id or company.country_id
+        if not country:
+            country = cls.env.ref("base.ar", raise_if_not_found=False)
+        if country:
+            if not company.country_id:
+                company.country_id = country
+            if "account_fiscal_country_id" in company._fields and not company.account_fiscal_country_id:
+                company.account_fiscal_country_id = country
+        chart = cls.env["account.chart.template"].with_company(company)
+        mapping = chart._get_chart_template_mapping()
+        code = "ar_ri" if "ar_ri" in mapping else chart._guess_chart_template(country)
+        chart.try_loading(code, company, install_demo=False)
+        if country and "account_fiscal_country_id" in company._fields and not company.account_fiscal_country_id:
+            company.account_fiscal_country_id = country
+
+    @classmethod
+    def _chart_or_shared(cls, companies, account_type, name, reconcile=False):
+        """Una cuenta del plan visible para todas las compañías, o una nueva compartida.
+
+        Banco y efectivo no se comparten: ese caso no entra por acá.
+        """
+        if account_type == "asset_cash":
+            raise AssertionError("Una cuenta de banco o efectivo no se comparte.")
+        account_model = cls.env["account.account"].with_company(companies[:1])
+        account = account_model.search([
+            *account_model._check_company_domain(companies[:1]),
+            ("account_type", "=", account_type),
+        ], limit=1)
+        # Solo se reutiliza si ya cubre a todas las compañías. No se le agregan
+        # compañías a una cuenta del plan: banco y efectivo no se comparten, y
+        # el resto se crea aparte cuando el plan es por compañía.
+        if account and not (companies - account.sudo().company_ids):
+            return account
+        return cls._shared_account(companies, name, account_type, reconcile=reconcile)
+
+    @classmethod
+    def _bank_journal(cls, company):
+        """Diario bancario de la casa central, con su cuenta de efectivo propia."""
+        journal = cls.env["account.journal"].search([
+            ("company_id", "=", company.id),
+            ("type", "=", "bank"),
+        ], limit=1)
+        if journal and journal.default_account_id:
+            return journal, journal.default_account_id
+        account = cls._company_account(company, "Banco test", "asset_cash")
+        if journal:
+            journal.default_account_id = account
+            return journal, account
+        journal_model = cls.env["account.journal"]
+        vals = {
+            "name": cls._test_name("Banco casa central"),
+            "code": cls._free_journal_code(company, "BCT1"),
+            "type": "bank",
+            "company_id": company.id,
+            "default_account_id": account.id,
+        }
+        if "suspense_account_id" in journal_model._fields:
+            vals["suspense_account_id"] = cls._company_account(
+                company, "Suspenso banco test", "asset_current",
+            ).id
+        journal = journal_model.with_company(company).create(vals)
+        return journal, account
+
+    @classmethod
+    def _wire_outstanding(cls, journal):
+        """Sin cuenta de pagos pendientes el pago no genera asiento.
+
+        Es lo que hacía AccountTestInvoicingCommon con las líneas manual del
+        diario bancario del plan. Banco y efectivo no sirven: tienen que ser
+        cuentas a conciliar de activo corriente, de una sola compañía.
+        """
+        company = journal.company_id
+        template = cls.env["account.chart.template"].with_company(company)
+        outbound = template.ref("account_journal_payment_credit_account_id", raise_if_not_found=False)
+        inbound = template.ref("account_journal_payment_debit_account_id", raise_if_not_found=False)
+        if not outbound or outbound.account_type == "asset_cash":
+            outbound = cls._company_account(company, "Pagos pendientes", "asset_current", reconcile=True)
+        if not inbound or inbound.account_type == "asset_cash":
+            inbound = cls._company_account(company, "Cobros pendientes", "asset_current", reconcile=True)
+        if "account_journal_payment_credit_account_id" in company._fields:
+            company.account_journal_payment_credit_account_id = outbound
+        if "account_journal_payment_debit_account_id" in company._fields:
+            company.account_journal_payment_debit_account_id = inbound
+        for line in journal.outbound_payment_method_line_ids:
+            if not line.payment_account_id and line.code in ("manual", "electronic"):
+                line.payment_account_id = outbound
+        for line in journal.inbound_payment_method_line_ids:
+            if not line.payment_account_id and line.code in ("manual", "electronic"):
+                line.payment_account_id = inbound
+        outbound_first = journal.outbound_payment_method_line_ids.filtered(lambda line: line.code == "manual")[:1]
+        inbound_first = journal.inbound_payment_method_line_ids.filtered(lambda line: line.code == "manual")[:1]
+        if not outbound_first:
+            outbound_first = journal.outbound_payment_method_line_ids[:1]
+        if not inbound_first:
+            inbound_first = journal.inbound_payment_method_line_ids[:1]
+        if outbound_first and not outbound_first.payment_account_id:
+            outbound_first.payment_account_id = outbound
+        if inbound_first and not inbound_first.payment_account_id:
+            inbound_first.payment_account_id = inbound
+
+    @classmethod
+    def _set_debt_defaults(cls, company, payable, receivable):
+        """Valor por defecto de a pagar y a cobrar para esa compañía."""
+        defaults = cls.env["ir.default"].sudo()
+        if not hasattr(defaults, "set"):
+            return
+        if payable and company in payable.company_ids:
+            defaults.set("res.partner", "property_account_payable_id", payable.id, company_id=company.id)
+        if receivable and company in receivable.company_ids:
+            defaults.set("res.partner", "property_account_receivable_id", receivable.id, company_id=company.id)
+
+    @classmethod
+    def _set_partner_debt_accounts(cls, company, partner, payable, receivable):
+        partner = partner.with_company(company)
+        if payable and company in payable.company_ids:
+            partner.property_account_payable_id = payable
+        if receivable and company in receivable.company_ids:
+            partner.property_account_receivable_id = receivable
+
+    def _ensure_company_debt_accounts(self, company, partner):
+        """La factura de una compañía nueva (otra entidad) también necesita a pagar y a cobrar."""
+        self._load_chart(company)
+        if "account_fiscal_country_id" in company._fields and not company.account_fiscal_country_id:
+            country = company.country_id or self.env.ref("base.ar", raise_if_not_found=False)
+            if country:
+                company.account_fiscal_country_id = country
+        self._ensure_general_journal(company)
+        payable = self.payable_account if company in self.payable_account.company_ids else self.env["account.account"]
+        receivable = self.receivable_account if company in self.receivable_account.company_ids else self.env["account.account"]
+        if not payable:
+            payable = self.env["account.account"].with_company(company).search([
+                *self.env["account.account"]._check_company_domain(company),
+                ("account_type", "=", "liability_payable"),
+            ], limit=1)
+        if not receivable:
+            receivable = self.env["account.account"].with_company(company).search([
+                *self.env["account.account"]._check_company_domain(company),
+                ("account_type", "=", "asset_receivable"),
+            ], limit=1)
+        if not payable:
+            payable = self._company_account(company, "Proveedores", "liability_payable", reconcile=True)
+        if not receivable:
+            receivable = self._company_account(company, "Clientes", "asset_receivable", reconcile=True)
+        self._set_debt_defaults(company, payable, receivable)
+        if partner:
+            self._set_partner_debt_accounts(company, partner, payable, receivable)
+        return payable, receivable
 
     @classmethod
     def _company_account(cls, company, name, account_type, reconcile=False):
@@ -216,17 +351,16 @@ class TestMultiBranchPayment(TransactionCase):
 
     @classmethod
     def _ensure_general_journal(cls, company):
-        journal = cls.env["account.journal"].search([
-            ("company_id", "=", company.id),
-            ("type", "=", "general"),
-        ], limit=1)
-        if not journal:
-            cls.env["account.journal"].with_company(company).create({
-                "name": "Operaciones varias",
-                "code": cls._free_journal_code(company, "OPV"),
-                "type": "general",
-                "company_id": company.id,
-            })
+        # El puente no usa el diario de punto de venta. Si el plan no dejó
+        # uno de operaciones varias, se crea con el nombre que el módulo busca.
+        if cls.env["account.payment"]._kai_default_misc_journal(company):
+            return
+        cls.env["account.journal"].with_company(company).create({
+            "name": "Operaciones varias",
+            "code": cls._free_journal_code(company, "OPV"),
+            "type": "general",
+            "company_id": company.id,
+        })
 
     def _invoice_journal(self, company, move_type):
         """Diario sin comprobantes fiscales.
@@ -260,11 +394,18 @@ class TestMultiBranchPayment(TransactionCase):
         return journal_model.with_company(company).create(vals)
 
     def _invoice(self, company, move_type, partner, amount):
+        self._ensure_company_debt_accounts(company, partner)
         account = (
             self.expense_account
             if move_type in ("in_invoice", "in_refund")
             else self.revenue_account
         )
+        if company not in account.company_ids:
+            account = self._company_account(
+                company,
+                "Gastos" if account.account_type == "expense" else "Ingresos",
+                account.account_type,
+            )
         vals = {
             "move_type": move_type,
             "company_id": company.id,
