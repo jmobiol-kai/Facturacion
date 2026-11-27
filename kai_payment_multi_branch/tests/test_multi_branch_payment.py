@@ -685,7 +685,8 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         payment.amount = 120
         with self.assertRaises(UserError) as error:
             payment.action_post()
-        self.assertIn("exactamente", str(error.exception))
+        self.assertIn("parciales", str(error.exception))
+        self.assertNotIn("anticipos", str(error.exception).lower())
 
     def test_foreign_currency_is_blocked(self):
         bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 40)
@@ -1178,3 +1179,272 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         self.assertNotIn("Regularización", text)
         self.assertNotIn("On account", text)
         self.assertNotIn("A cuenta", text)
+
+    def _cc_line(self, payment, company):
+        lines = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id == self.cc_branches and line.kai_settled_company_id == company
+        )
+        self.assertEqual(len(lines), 1)
+        return lines
+
+    def _bridge(self, payment, company):
+        bridge = payment.kai_bridge_move_ids.filtered(lambda move: move.company_id == company)
+        self.assertEqual(len(bridge), 1)
+        self._assert_move_balanced(bridge)
+        return bridge
+
+    def _advance_line(self, move, account_type):
+        lines = move.line_ids.filtered(
+            lambda line: line.account_id.account_type == account_type and not line.kai_debt_move_line_id
+        )
+        self.assertEqual(len(lines), 1)
+        return lines
+
+    def _central_balance(self, bridge):
+        lines = bridge.line_ids.filtered(lambda line: line.account_id == self.cc_central)
+        return sum(lines.mapped("balance"))
+
+    def test_anticipo_en_una_sucursal(self):
+        """El 2436 en chico: factura 100 de Yesterday y pago 150 desde la casa central.
+
+        El residual de la línea de anticipo es el que se concilia con una
+        factura posterior de la misma sucursal, el mismo contacto y la misma
+        cuenta a pagar.
+        """
+        bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        lines = self._debt_lines(bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        self.assertEqual(payment.kai_advance_company_id, self.yesterday)
+        payment.amount = 150
+        if payment.move_id and payment.move_id.state == "draft":
+            # El borrador se rearma por _kai_synchronize_multi_branch_move, no solo al confirmar.
+            draft_cc = payment.move_id.line_ids.filtered(lambda line: line.account_id == self.cc_branches)
+            self.assertEqual(len(draft_cc), 1)
+            self.assertAlmostEqual(draft_cc.balance, 150.0, places=2)
+        payment.action_post()
+
+        self._assert_reconciled(lines)
+        self.assertEqual(payment.move_id.company_id, self.company)
+        self._assert_move_balanced(payment.move_id)
+        self.assertFalse(payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        ))
+        cc = self._cc_line(payment, self.yesterday)
+        self.assertEqual(cc.partner_id, self.yesterday.partner_id)
+        self.assertEqual(cc.kai_settled_company_id, self.yesterday)
+        self.assertAlmostEqual(cc.balance, 150.0, places=2)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertFalse(advance.kai_debt_move_line_id)
+        self.assertFalse(advance.reconciled)
+        self.assertEqual(advance.partner_id, self.vendor.commercial_partner_id)
+        self.assertEqual(advance.account_id, lines.account_id)
+        self.assertIn("Anticipo", advance.name)
+        self.assertAlmostEqual(advance.balance, 50.0, places=2)
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        self.assertAlmostEqual(self._central_balance(bridge), -150.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 50.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 150.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), -150.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -150.0, places=2)
+
+        payment.action_draft()
+        lines.invalidate_recordset()
+        self.assertFalse(payment.kai_bridge_move_ids)
+        self.assertFalse(lines.reconciled)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), -100.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 0.0, places=2)
+
+        payment.action_post()
+        self._assert_reconciled(lines)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        future = self._invoice(self.yesterday, "in_invoice", self.vendor, 50)
+        future_lines = self._debt_lines(future)
+        self.assertEqual(advance.account_id, future_lines.account_id)
+        self.assertEqual(advance.partner_id, future_lines.partner_id)
+        (advance + future_lines).with_company(self.yesterday).reconcile()
+        self._assert_reconciled(future_lines)
+        self._assert_reconciled(advance)
+        payment.invalidate_recordset(["matched_move_line_ids"])
+        self.assertIn(future_lines, payment.matched_move_line_ids)
+        self.assertIn(lines, payment.matched_move_line_ids)
+
+        payment.action_cancel()
+        lines.invalidate_recordset()
+        future_lines.invalidate_recordset()
+        self.assertEqual(payment.state, "canceled")
+        self.assertFalse(payment.kai_bridge_move_ids)
+        self.assertFalse(lines.reconciled)
+        self.assertFalse(future_lines.reconciled)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), -150.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), 0.0, places=2)
+
+    def test_anticipo_con_retenciones(self):
+        bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        lines = self._debt_lines(bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        payment.payment_method_line_id = self._manual_method_line()
+        withholding = self._add_withholding(payment)
+        payment.amount = 150.0 - withholding.amount
+        payment.action_post()
+
+        self._assert_withholding_on_payer(payment, 150.0)
+        self.assertFalse(payment.kai_bridge_move_ids.line_ids.filtered(
+            lambda line: line.account_id == self.wth_account
+        ))
+        self._assert_reconciled(lines)
+        self.assertAlmostEqual(self._cc_line(payment, self.yesterday).balance, 150.0, places=2)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        self.assertAlmostEqual(self._central_balance(bridge), -150.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+        self.assertEqual(bridge.company_id, self.yesterday)
+        self.assertEqual(payment.move_id.company_id, self.company)
+
+    def test_anticipo_con_cheques_propios(self):
+        bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        lines = self._debt_lines(bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        today = fields.Date.today()
+        self._use_own_checks(payment, [
+            (today, 40.0),
+            (today + timedelta(days=15), 60.0),
+            (today + timedelta(days=45), 50.0),
+        ])
+        payment.amount = 150.0
+        self.assertAlmostEqual(sum(payment.l10n_latam_new_check_ids.mapped("amount")), 150.0, places=2)
+        payment.action_post()
+
+        self._assert_check_lines(payment)
+        self._assert_reconciled(lines)
+        self.assertAlmostEqual(self._cc_line(payment, self.yesterday).balance, 150.0, places=2)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        self.assertAlmostEqual(self._central_balance(bridge), -150.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -150.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+        self.assertFalse(payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        ))
+
+    def test_anticipo_sin_sucursal_elegida_no_se_publica(self):
+        yesterday = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        fisa = self._invoice(self.fisa, "in_invoice", self.vendor, 50)
+        payment = self._payment("supplier", self.vendor, self._debt_lines(yesterday | fisa))
+        self.assertFalse(payment.kai_advance_company_id)
+        payment.amount = 200
+        with self.assertRaises(UserError) as error:
+            payment.action_post()
+        self.assertIn("sucursal del anticipo", str(error.exception).lower())
+        self.assertFalse(payment.kai_bridge_move_ids)
+        if payment.move_id:
+            self.assertNotEqual(payment.move_id.state, "posted")
+
+    def test_anticipo_en_la_sucursal_elegida(self):
+        """Deuda Yesterday 100 y Fisa 50, pago 200.
+
+        El anticipo es el bruto menos toda la deuda: 50, y queda en Yesterday.
+        La cuenta corriente de Yesterday queda en 150 y la de Fisa en 50. La
+        intercompañía suma 200, el bruto del pago.
+        """
+        yesterday = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        fisa = self._invoice(self.fisa, "in_invoice", self.vendor, 50)
+        yesterday_lines = self._debt_lines(yesterday)
+        fisa_lines = self._debt_lines(fisa)
+        payment = self._payment("supplier", self.vendor, yesterday_lines | fisa_lines)
+        payment.kai_advance_company_id = self.yesterday
+        payment.amount = 200
+        self.assertEqual(payment.kai_advance_company_id, self.yesterday)
+        payment.action_post()
+
+        self._assert_reconciled(yesterday_lines | fisa_lines)
+        self.assertAlmostEqual(self._cc_line(payment, self.yesterday).balance, 150.0, places=2)
+        self.assertAlmostEqual(self._cc_line(payment, self.fisa).balance, 50.0, places=2)
+        yesterday_bridge = self._bridge(payment, self.yesterday)
+        fisa_bridge = self._bridge(payment, self.fisa)
+        advance = self._advance_line(yesterday_bridge, "liability_payable")
+        self.assertAlmostEqual(advance.balance, 50.0, places=2)
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        self.assertFalse(advance.reconciled)
+        self.assertFalse(fisa_bridge.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable" and not line.kai_debt_move_line_id
+        ))
+        self.assertAlmostEqual(self._central_balance(yesterday_bridge), -150.0, places=2)
+        self.assertAlmostEqual(self._central_balance(fisa_bridge), -50.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 200.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), -150.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.fisa), -50.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+
+    def test_recibo_de_cliente_con_anticipo(self):
+        invoice = self._invoice(self.yesterday, "out_invoice", self.customer, 100)
+        lines = self._debt_lines(invoice)
+        payment = self._payment("customer", self.customer, lines)
+        self.assertEqual(payment.kai_advance_company_id, self.yesterday)
+        payment.amount = 150
+        payment.action_post()
+
+        self._assert_reconciled(lines)
+        self.assertFalse(payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "asset_receivable"
+        ))
+        cc = self._cc_line(payment, self.yesterday)
+        self.assertAlmostEqual(cc.balance, -150.0, places=2)
+        self.assertEqual(cc.partner_id, self.yesterday.partner_id)
+        self.assertEqual(cc.kai_settled_company_id, self.yesterday)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "asset_receivable")
+        self.assertEqual(advance.partner_id, self.customer.commercial_partner_id)
+        self.assertFalse(advance.kai_debt_move_line_id)
+        self.assertFalse(advance.reconciled)
+        self.assertAlmostEqual(advance.balance, -50.0, places=2)
+        self.assertAlmostEqual(advance.amount_residual, -50.0, places=2)
+        self.assertAlmostEqual(advance.credit, 50.0, places=2)
+        self.assertAlmostEqual(self._central_balance(bridge), 150.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.customer, "asset_receivable"), -50.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.customer, "asset_receivable"), 0.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), -150.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), 150.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), 150.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+
+    def test_anticipo_con_deuda_de_casa_central_y_una_sucursal(self):
+        central = self._invoice(self.company, "in_invoice", self.vendor, 80)
+        yesterday = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        central_lines = self._debt_lines(central)
+        yesterday_lines = self._debt_lines(yesterday)
+        payment = self._payment("supplier", self.vendor, central_lines | yesterday_lines)
+        self.assertEqual(payment.kai_advance_company_id, self.yesterday)
+        payment.amount = 220
+        payment.action_post()
+
+        self._assert_reconciled(central_lines | yesterday_lines)
+        payable = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        )
+        self.assertEqual(len(payable), 1)
+        self.assertAlmostEqual(payable.balance, 80.0, places=2)
+        self.assertEqual(payable.partner_id, self.vendor.commercial_partner_id)
+        central_match = central_lines.matched_debit_ids | central_lines.matched_credit_ids
+        counterparts = (central_match.debit_move_id | central_match.credit_move_id) - central_lines
+        self.assertTrue(counterparts)
+        self.assertTrue(all(line.move_id == payment.move_id for line in counterparts))
+        self.assertAlmostEqual(self._cc_line(payment, self.yesterday).balance, 140.0, places=2)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertAlmostEqual(advance.balance, 40.0, places=2)
+        self.assertAlmostEqual(advance.amount_residual, 40.0, places=2)
+        self.assertFalse(advance.reconciled)
+        self.assertAlmostEqual(self._central_balance(bridge), -140.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 40.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 140.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), -140.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -220.0, places=2)
+        self.assertEqual(payment.kai_bridge_move_ids.company_id, self.yesterday)
+        self._assert_move_balanced(payment.move_id)

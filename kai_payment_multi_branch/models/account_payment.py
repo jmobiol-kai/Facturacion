@@ -35,11 +35,100 @@ class AccountPayment(models.Model):
         copy=False,
     )
     kai_bridge_move_count = fields.Integer(compute="_compute_kai_bridge_move_count")
+    kai_advance_company_id = fields.Many2one(
+        "res.company",
+        string="Sucursal del anticipo",
+        compute="_compute_kai_advance_company_id",
+        store=True,
+        readonly=False,
+        precompute=True,
+        copy=False,
+        check_company=False,
+        help="Sucursal en la que queda el excedente del pago, como anticipo abierto "
+        "en la cuenta a pagar o a cobrar del contacto. Si la deuda es de una sola "
+        "sucursal, se completa sola. Con varias sucursales hay que elegirla antes de confirmar.",
+    )
+    # La elección del usuario, separada del cómputo. Si no, al recomputar (por
+    # ejemplo al confirmar, que invalida las líneas a pagar) se pierde la sucursal
+    # elegida cuando hay más de una.
+    kai_advance_company_manual_id = fields.Many2one(
+        "res.company",
+        string="Sucursal del anticipo elegida",
+        copy=False,
+        check_company=False,
+    )
+    kai_foreign_company_count = fields.Integer(
+        string="Sucursales de la deuda",
+        compute="_compute_kai_foreign_company_count",
+    )
+    kai_advance_company_candidate_ids = fields.Many2many(
+        "res.company",
+        string="Sucursales para el anticipo",
+        compute="_compute_kai_advance_company_candidate_ids",
+    )
 
     @api.depends("kai_bridge_move_ids")
     def _compute_kai_bridge_move_count(self):
         for payment in self:
             payment.kai_bridge_move_count = len(payment.kai_bridge_move_ids)
+
+    @api.depends("company_id", "to_pay_move_line_ids.company_id")
+    def _compute_kai_foreign_company_count(self):
+        for payment in self:
+            payment.kai_foreign_company_count = len(payment._kai_foreign_companies())
+
+    @api.depends("company_id")
+    def _compute_kai_advance_company_candidate_ids(self):
+        for payment in self:
+            company = payment.company_id
+            if not company:
+                payment.kai_advance_company_candidate_ids = False
+                continue
+            payment.kai_advance_company_candidate_ids = company._get_legal_entity_companies() - company
+
+    @api.depends("company_id", "to_pay_move_line_ids.company_id", "kai_advance_company_manual_id")
+    def _compute_kai_advance_company_id(self):
+        for payment in self:
+            foreign = payment._kai_foreign_companies()
+            manual = payment.kai_advance_company_manual_id
+            if len(foreign) == 1:
+                payment.kai_advance_company_id = foreign
+            elif len(foreign) > 1 and payment._kai_advance_company_allowed(manual):
+                payment.kai_advance_company_id = manual
+            else:
+                payment.kai_advance_company_id = False
+
+    def _kai_vals_with_advance_choice(self, vals):
+        """Guarda la sucursal que eligió el usuario, no la que se autocompleta."""
+        if "kai_advance_company_id" not in vals or "kai_advance_company_manual_id" in vals:
+            return vals
+        if self.env.context.get("kai_advance_company_autofill"):
+            return vals
+        chosen = vals["kai_advance_company_id"]
+        # La elección entra primero para que el cómputo, si se dispara en este
+        # write, lea la sucursal que acaba de indicar el usuario.
+        ordered = {"kai_advance_company_manual_id": chosen}
+        ordered.update(vals)
+        return ordered
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        vals_list = [self._kai_vals_with_advance_choice(vals) for vals in vals_list]
+        return super().create(vals_list)
+
+    def write(self, vals):
+        return super().write(self._kai_vals_with_advance_choice(vals))
+
+    def _kai_foreign_companies(self):
+        self.ensure_one()
+        return self.to_pay_move_line_ids.company_id - self.company_id
+
+    def _kai_advance_company_allowed(self, company):
+        """La sucursal del anticipo es otra compañía de la misma entidad legal."""
+        self.ensure_one()
+        if not company or not self.company_id or company == self.company_id:
+            return False
+        return self._kai_shares_legal_entity(company | self.company_id)
 
     def _kai_is_multi_branch_payment(self):
         """Deuda de otra compañía de la entidad, aunque sea una sola sucursal.
@@ -218,9 +307,10 @@ class AccountPayment(models.Model):
             if payment.is_internal_transfer:
                 raise UserError(_("Una transferencia interna no puede cancelar deuda de otra sucursal."))
             # Cheques propios y retenciones se admiten en el pago nuevo: la
-            # retención queda en la compañía que paga y cada sucursal recibe
-            # el bruto de su deuda. La regularización de pagos viejos sigue
-            # rechazándolos en _kai_regularize_block_reason.
+            # retención queda en la compañía que paga. Cada sucursal recibe el
+            # bruto de su deuda y, si el pago supera esa deuda, también el
+            # anticipo. La regularización de pagos viejos sigue rechazando
+            # cheques y retenciones en _kai_regularize_block_reason.
             if payment.currency_id != payment.company_currency_id:
                 raise UserError(
                     _(
@@ -273,6 +363,104 @@ class AccountPayment(models.Model):
             allocations.append((line, balance))
         return allocations
 
+    def _kai_classify_coverage(self, total_balance, debt_balance):
+        """Bruto menos deuda, con el signo de la contrapartida.
+
+        ``exact`` si coinciden. ``advance`` si el pago supera la deuda: el gap
+        se suma a la cuenta corriente de la sucursal. ``partial`` si no la cubre.
+        En un pago a proveedor la contrapartida es al debe (positiva); en un
+        cobro es al haber (negativa).
+        """
+        self.ensure_one()
+        currency = self.company_currency_id
+        gap = currency.round(total_balance - debt_balance)
+        if currency.is_zero(gap):
+            return "exact", 0.0
+        covers_more = gap < 0 if self.payment_type == "inbound" else gap > 0
+        return ("advance" if covers_more else "partial"), gap
+
+    def _kai_partial_payment_message(self, total_balance, debt_balance):
+        self.ensure_one()
+        return _(
+            "El pago multi-sucursal no puede ser menor que la deuda seleccionada "
+            "(facturas, notas de crédito y notas de débito). El asiento del pago cancela "
+            "%(payment)s y las líneas seleccionadas suman %(debt)s. Los pagos parciales "
+            "no están soportados entre sucursales.",
+            payment=self._kai_format_amount(abs(total_balance)),
+            debt=self._kai_format_amount(abs(debt_balance)),
+        )
+
+    def _kai_require_advance_company(self, total_balance, debt_balance):
+        """Sucursal donde queda el excedente, o error si no se puede saber."""
+        self.ensure_one()
+        company = self.kai_advance_company_id
+        foreign = self._kai_foreign_companies()
+        if not company and len(foreign) == 1:
+            company = foreign
+        if not company:
+            advance = self.company_currency_id.round(abs(total_balance) - abs(debt_balance))
+            raise UserError(
+                _(
+                    "Indicá la sucursal del anticipo. El pago cancela %(payment)s y la deuda "
+                    "seleccionada suma %(debt)s, así que quedan %(advance)s a cuenta. Hay deuda "
+                    "de más de una sucursal y el excedente no se puede asignar solo.",
+                    payment=self._kai_format_amount(abs(total_balance)),
+                    debt=self._kai_format_amount(abs(debt_balance)),
+                    advance=self._kai_format_amount(advance),
+                )
+            )
+        if company == self.company_id:
+            raise UserError(
+                _(
+                    "El anticipo no puede quedar en %(company)s, que es la compañía del pago. "
+                    "Tiene que quedar abierto en una sucursal.",
+                    company=company.display_name,
+                )
+            )
+        if not self._kai_advance_company_allowed(company):
+            raise UserError(
+                _(
+                    "La sucursal del anticipo %(company)s tiene que ser de la misma entidad legal que %(payer)s.",
+                    company=company.display_name,
+                    payer=self.company_id.display_name,
+                )
+            )
+        self._kai_check_current_account(company.kai_central_current_account_id, company, "central")
+        self._kai_bridge_journal(company)
+        return company
+
+    def _kai_branch_counterpart_vals(self, template, company, balance):
+        self.ensure_one()
+        company_currency = self.company_currency_id
+        vals = dict(template)
+        vals.update(
+            {
+                "name": _(
+                    "Cuenta corriente %(branch)s · %(partner)s",
+                    branch=company.name,
+                    partner=self.partner_id.display_name,
+                ),
+                "account_id": self.company_id.kai_branch_current_account_id.id,
+                "partner_id": company.partner_id.id,
+                "balance": balance,
+                "amount_currency": balance,
+                "currency_id": company_currency.id,
+                "kai_settled_company_id": company.id,
+            }
+        )
+        return vals
+
+    def _kai_add_advance_to_counterpart(self, new_lines, template, company, advance_balance):
+        """Suma el anticipo a la cuenta corriente de la sucursal, o crea esa línea."""
+        currency = self.company_currency_id
+        for vals in new_lines:
+            if vals.get("kai_settled_company_id") == company.id:
+                balance = currency.round(vals["balance"] + advance_balance)
+                vals["balance"] = balance
+                vals["amount_currency"] = balance
+                return
+        new_lines.append(self._kai_branch_counterpart_vals(template, company, advance_balance))
+
     def _kai_split_counterpart_lines(self, counterpart_lines):
         self.ensure_one()
         if len(counterpart_lines) != 1:
@@ -287,17 +475,12 @@ class AccountPayment(models.Model):
         total_balance = template["balance"]
         allocations = self._kai_debt_allocations()
         debt_balance = company_currency.round(sum(balance for _line, balance in allocations))
-        if not company_currency.is_zero(total_balance - debt_balance):
-            raise UserError(
-                _(
-                    "El pago multi-sucursal tiene que cancelar exactamente la deuda seleccionada "
-                    "(facturas, notas de crédito y notas de débito). El asiento del pago cancela "
-                    "%(payment)s y las líneas seleccionadas suman %(debt)s. Los pagos parciales "
-                    "y los anticipos no están soportados entre sucursales.",
-                    payment=self._kai_format_amount(total_balance),
-                    debt=self._kai_format_amount(debt_balance),
-                )
-            )
+        kind, advance_balance = self._kai_classify_coverage(total_balance, debt_balance)
+        if kind == "partial":
+            raise UserError(self._kai_partial_payment_message(total_balance, debt_balance))
+        advance_company = self.env["res.company"]
+        if kind == "advance":
+            advance_company = self._kai_require_advance_company(total_balance, debt_balance)
 
         grouped = {}
         for line, balance in allocations:
@@ -328,23 +511,10 @@ class AccountPayment(models.Model):
                 )
                 new_lines.append(vals)
                 continue
-            vals = dict(template)
-            vals.update(
-                {
-                    "name": _(
-                        "Cuenta corriente %(branch)s · %(partner)s",
-                        branch=company.name,
-                        partner=self.partner_id.display_name,
-                    ),
-                    "account_id": self.company_id.kai_branch_current_account_id.id,
-                    "partner_id": company.partner_id.id,
-                    "balance": balance,
-                    "amount_currency": balance,
-                    "currency_id": company_currency.id,
-                    "kai_settled_company_id": company.id,
-                }
-            )
-            new_lines.append(vals)
+            new_lines.append(self._kai_branch_counterpart_vals(template, company, balance))
+
+        if advance_company:
+            self._kai_add_advance_to_counterpart(new_lines, template, advance_company, advance_balance)
 
         split_total = company_currency.round(sum(line["balance"] for line in new_lines))
         if not company_currency.is_zero(split_total - total_balance):
@@ -386,7 +556,10 @@ class AccountPayment(models.Model):
 
     def _synchronize_to_moves(self, changed_fields):
         standard_triggers = set(self._get_trigger_fields_to_synchronize())
-        if not any(field_name in changed_fields for field_name in standard_triggers | {"to_pay_move_line_ids"}):
+        if not any(
+            field_name in changed_fields
+            for field_name in standard_triggers | {"to_pay_move_line_ids", "kai_advance_company_id"}
+        ):
             return
 
         def needs_multi_sync(payment):
@@ -567,22 +740,68 @@ class AccountPayment(models.Model):
         # ``filtered`` conserva el orden de ``debt``, que es el de to_pay_move_line_ids.
         return debt.filtered(lambda line: line.id in matched_ids)
 
+    def _kai_move_counterpart_balance(self):
+        """Bruto ya asentado en la contrapartida del pago (deuda + anticipo)."""
+        self.ensure_one()
+        _liquidity, counterpart, _writeoff = self._seek_for_lines()
+        return self.company_currency_id.round(sum(counterpart.mapped("balance")))
+
+    def _kai_advance_account(self, company, debt_lines):
+        """Cuenta a pagar o cobrar donde queda abierto el anticipo de la sucursal."""
+        self.ensure_one()
+        accounts = debt_lines.account_id
+        if len(accounts) == 1:
+            return accounts
+        partner = self.partner_id.commercial_partner_id.with_company(company)
+        if self.partner_type == "supplier":
+            account = partner.property_account_payable_id
+            kind = "pagar"
+        else:
+            account = partner.property_account_receivable_id
+            kind = "cobrar"
+        if not account:
+            raise UserError(
+                _(
+                    "Falta la cuenta a %(kind)s de %(partner)s en %(company)s para dejar el anticipo.",
+                    kind=kind,
+                    partner=self.partner_id.display_name,
+                    company=company.display_name,
+                )
+            )
+        return account
+
     def _kai_create_bridge_moves(self):
         for payment in self:
             if payment.kai_bridge_move_ids or not payment._kai_is_multi_branch_payment():
                 continue
+            currency = payment.company_currency_id
+            allocations = payment._kai_debt_allocations()
+            debt_balance = currency.round(sum(balance for _line, balance in allocations))
+            gross = payment._kai_move_counterpart_balance()
+            kind, advance_balance = payment._kai_classify_coverage(gross, debt_balance)
+            if kind == "partial":
+                raise UserError(payment._kai_partial_payment_message(gross, debt_balance))
+            advance_company = payment.env["res.company"]
+            if kind == "advance":
+                advance_company = payment._kai_require_advance_company(gross, debt_balance)
             grouped = {}
-            for line, balance in payment._kai_debt_allocations():
+            for line, balance in allocations:
                 if line.company_id == payment.company_id:
                     continue
                 grouped.setdefault(line.company_id, []).append((line, balance))
+            if advance_company:
+                grouped.setdefault(advance_company, [])
             for company, items in grouped.items():
-                payment._kai_create_bridge_move(company, items)
+                company_advance = advance_balance if company == advance_company else 0.0
+                payment._kai_create_bridge_move(company, items, advance_balance=company_advance)
 
-    def _kai_create_bridge_move(self, company, items, date=None):
+    def _kai_create_bridge_move(self, company, items, date=None, advance_balance=0.0):
         self.ensure_one()
-        journal = self._kai_bridge_journal(company)
         company_currency = company.currency_id
+        advance_balance = company_currency.round(advance_balance or 0.0)
+        if not items and company_currency.is_zero(advance_balance):
+            return
+        journal = self._kai_bridge_journal(company)
         label = _("Cancelación %(payment)s", payment=self.name or self.display_name)
         commands = []
         for line, balance in items:
@@ -600,7 +819,29 @@ class AccountPayment(models.Model):
                     }
                 )
             )
-        cc_balance = company_currency.round(-sum(balance for _line, balance in items))
+        if not company_currency.is_zero(advance_balance):
+            debt_lines = self.env["account.move.line"].browse([line.id for line, _balance in items])
+            account = self._kai_advance_account(company, debt_lines)
+            commands.append(
+                Command.create(
+                    {
+                        "name": _(
+                            "Anticipo %(payment)s · %(partner)s",
+                            payment=self.name or self.display_name,
+                            partner=self.partner_id.display_name,
+                        ),
+                        "account_id": account.id,
+                        "partner_id": self.partner_id.commercial_partner_id.id,
+                        "currency_id": company_currency.id,
+                        "amount_currency": advance_balance,
+                        "balance": advance_balance,
+                        "kai_settled_company_id": company.id,
+                    }
+                )
+            )
+        cc_balance = company_currency.round(
+            -(sum(balance for _line, balance in items) + advance_balance)
+        )
         if not company_currency.is_zero(cc_balance):
             commands.append(
                 Command.create(
