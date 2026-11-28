@@ -161,19 +161,21 @@ msgstr ""
 
 #. module: kai_payment_multi_branch
 #: model:ir.model.fields,field_description:kai_payment_multi_branch.field_account_payment__kai_advance_company_id
-msgid "Sucursal del anticipo"
-msgstr "Sucursal del anticipo"
+msgid "Compañía del anticipo"
+msgstr "Compañía del anticipo"
 
 #. module: kai_payment_multi_branch
 #: model:ir.model.fields,help:kai_payment_multi_branch.field_account_payment__kai_advance_company_id
 msgid ""
-"Sucursal en la que queda el excedente del pago, como anticipo abierto en la "
-"cuenta a pagar o a cobrar del contacto. Si la deuda es de una sola sucursal, "
-"se completa sola. Con varias sucursales hay que elegirla antes de confirmar."
+"Compañía en la que queda el excedente: una sucursal, la casa central o la "
+"misma compañía del pago. Si es la compañía del pago, el anticipo queda en "
+"la cuenta a pagar o a cobrar del contacto, sin asiento puente. Si la deuda "
+"es de una sola sucursal, se completa sola."
 msgstr ""
-"Sucursal en la que queda el excedente del pago, como anticipo abierto en la "
-"cuenta a pagar o a cobrar del contacto. Si la deuda es de una sola sucursal, "
-"se completa sola. Con varias sucursales hay que elegirla antes de confirmar."
+"Compañía en la que queda el excedente: una sucursal, la casa central o la "
+"misma compañía del pago. Si es la compañía del pago, el anticipo queda en "
+"la cuenta a pagar o a cobrar del contacto, sin asiento puente. Si la deuda "
+"es de una sola sucursal, se completa sola."
 
 #. module: kai_payment_multi_branch
 #: model:ir.model.fields,field_description:kai_payment_multi_branch.field_account_payment__kai_advance_company_manual_id
@@ -222,10 +224,10 @@ msgstr ""
 #. odoo-python
 #: code:addons/kai_payment_multi_branch/models/account_payment.py:0
 msgid ""
-"La sucursal del anticipo %(company)s tiene que ser de la misma entidad legal "
+"La compañía del anticipo %(company)s tiene que ser de la misma entidad legal "
 "que %(payer)s."
 msgstr ""
-"La sucursal del anticipo %(company)s tiene que ser de la misma entidad legal "
+"La compañía del anticipo %(company)s tiene que ser de la misma entidad legal "
 "que %(payer)s."
 
 #. module: kai_payment_multi_branch

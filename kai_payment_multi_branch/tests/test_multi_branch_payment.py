@@ -428,17 +428,19 @@ class TestMultiBranchPayment(TransactionCase):
     def _debt_lines(self, moves):
         return moves.line_ids.filtered(lambda line: line.account_id.account_type in DEBT_TYPES)
 
-    def _payment(self, partner_type, partner, lines):
+    def _payment(self, partner_type, partner, lines, company=None, journal=None):
+        company = company or self.company
+        journal = journal or self.bank_journal
         amount = abs(sum(lines.mapped("amount_residual")))
         payment_type = "outbound" if partner_type == "supplier" else "inbound"
-        payment = self.env["account.payment"].with_company(self.company).create({
+        payment = self.env["account.payment"].with_company(company).create({
             "payment_type": payment_type,
             "partner_type": partner_type,
             "partner_id": partner.id,
             "amount": amount,
-            "currency_id": self.company.currency_id.id,
-            "journal_id": self.bank_journal.id,
-            "company_id": self.company.id,
+            "currency_id": company.currency_id.id,
+            "journal_id": journal.id,
+            "company_id": company.id,
         })
         payment.to_pay_move_line_ids = [Command.set(lines.ids)]
         return payment
@@ -625,19 +627,22 @@ class TestMultiBranchPayment(TransactionCase):
         checks.invalidate_recordset(["current_journal_id"])
         self.assertFalse(any(checks.mapped("current_journal_id")))
 
-    def _ensure_withholding_tax(self):
+    def _ensure_withholding_tax(self, company=None):
         """Impuesto mínimo de ganancias. No usa el padrón ni la posición fiscal."""
-        if self.wth_tax:
+        company = company or self.company
+        if company == self.company and self.wth_tax:
             return self.wth_tax
-        companies = self.company | self.yesterday | self.fisa
-        account_model = self.env["account.account"].with_company(self.company)
-        self.wth_account = account_model.create({
+        companies = self.company | self.yesterday | self.fisa | company
+        account_model = self.env["account.account"].with_company(company)
+        wth_account = account_model.create({
             "name": self._test_name("Retención ganancias a depositar"),
             "code": account_model._search_new_account_code("21420000", cache=set()),
             "account_type": "liability_current",
             "reconcile": False,
-            "company_ids": [Command.set(self.company.ids)],
+            "company_ids": [Command.set(company.ids)],
         })
+        if company == self.company:
+            self.wth_account = wth_account
         base_account = account_model.create({
             "name": self._test_name("Base de retenciones"),
             "code": account_model._search_new_account_code("21420000", cache=set()),
@@ -645,22 +650,22 @@ class TestMultiBranchPayment(TransactionCase):
             "reconcile": False,
             "company_ids": [Command.set(companies.ids)],
         })
-        if "l10n_ar_tax_base_account_id" in self.company._fields:
-            self.company.l10n_ar_tax_base_account_id = base_account
+        if "l10n_ar_tax_base_account_id" in company._fields and not company.l10n_ar_tax_base_account_id:
+            company.l10n_ar_tax_base_account_id = base_account
         sequence = self.env["ir.sequence"].create({
             "name": "Retención ganancias test",
             "implementation": "standard",
             "padding": 8,
             "prefix": "RG-",
-            "company_id": self.company.id,
+            "company_id": company.id,
         })
         tax_group = self.env["account.tax.group"].search([
-            ("company_id", "=", self.company.id),
+            ("company_id", "=", company.id),
         ], limit=1)
         if not tax_group:
             tax_group = self.env["account.tax.group"].create({
                 "name": "Retenciones",
-                "company_id": self.company.id,
+                "company_id": company.id,
             })
         def repartition():
             return [
@@ -668,7 +673,7 @@ class TestMultiBranchPayment(TransactionCase):
                 Command.create({
                     "repartition_type": "tax",
                     "factor_percent": 100.0,
-                    "account_id": self.wth_account.id,
+                    "account_id": wth_account.id,
                 }),
             ]
 
@@ -677,7 +682,7 @@ class TestMultiBranchPayment(TransactionCase):
             "amount_type": "percent",
             "amount": 10.0,
             "type_tax_use": "none",
-            "company_id": self.company.id,
+            "company_id": company.id,
             "tax_group_id": tax_group.id,
             "l10n_ar_tax_type": "earnings",
             "l10n_ar_withholding_payment_type": "supplier",
@@ -688,14 +693,16 @@ class TestMultiBranchPayment(TransactionCase):
             "refund_repartition_line_ids": repartition(),
         }
         if "l10n_ar_code" in self.env["account.tax"]._fields:
-            vals["l10n_ar_code"] = "KAI99"
+            vals["l10n_ar_code"] = "KAI99" if company == self.company else "KAI98"
         if "ratio" in self.env["account.tax"]._fields:
             vals["ratio"] = 100.0
-        self.wth_tax = self.env["account.tax"].create(vals)
-        return self.wth_tax
+        tax = self.env["account.tax"].create(vals)
+        if company == self.company:
+            self.wth_tax = tax
+        return tax
 
     def _add_withholding(self, payment):
-        tax = self._ensure_withholding_tax()
+        tax = self._ensure_withholding_tax(payment.company_id)
         payment.l10n_ar_withholding_line_ids = [Command.create({
             "tax_id": tax.id,
             "name": "RG-00000001",
@@ -757,8 +764,9 @@ class TestMultiBranchPayment(TransactionCase):
         ).mapped("balance")))
         self.assertAlmostEqual(cc_total, gross_total, places=2)
 
-    def _assert_withholding_on_payer(self, payment, gross):
-        lines = payment.move_id.line_ids.filtered(lambda line: line.account_id == self.wth_account)
+    def _assert_withholding_on_payer(self, payment, gross, account=None):
+        account = account or self.wth_account
+        lines = payment.move_id.line_ids.filtered(lambda line: line.account_id == account)
         self.assertTrue(lines)
         withheld = payment.company_currency_id.round(-sum(lines.mapped("balance")))
         self.assertGreater(withheld, 0.0)
@@ -1717,3 +1725,225 @@ class TestMultiBranchPayment(TransactionCase):
         self.assertAlmostEqual(self._liquidity_balance(payment), -220.0, places=2)
         self.assertEqual(payment.kai_bridge_move_ids.company_id, self.yesterday)
         self._assert_move_balanced(payment.move_id)
+
+    def _branch_bank(self, company):
+        journal, _account = self._bank_journal(company)
+        self._wire_outstanding(journal)
+        return journal
+
+    def _enable_branch_as_payer(self, branch):
+        """La sucursal que paga a otras sucursales usa su cuenta corriente con sucursales."""
+        if not branch.kai_branch_current_account_id:
+            branch.kai_branch_current_account_id = self._company_account(
+                branch, "CC con sucursales de la sucursal", "asset_current",
+            )
+        self.assertTrue(branch.kai_central_current_account_id)
+        self.assertFalse(self.company.kai_central_current_account_id)
+        self.assertTrue(self.company.kai_branch_current_account_id)
+
+    def _another_branch(self, name):
+        branch = self._branch(name)
+        self._load_chart(branch)
+        self._ensure_general_journal(branch)
+        self.cc_central.write({"company_ids": [Command.link(branch.id)]})
+        branch.kai_central_current_account_id = self.cc_central
+        if "use_payment_pro" in branch._fields:
+            branch.use_payment_pro = True
+        allowed = list(set(self.env.context.get("allowed_company_ids") or []) | set(branch.ids))
+        self.env = self.env(context=dict(self.env.context, allowed_company_ids=allowed))
+        return branch
+
+    def test_sucursal_paga_tres_sucursales_anticipo_en_casa_central(self):
+        """Como el 2436: Yesterday paga su deuda y la de otras dos, y el excedente queda en la casa central.
+
+        La casa central no tiene cuenta corriente con casa central. El anticipo
+        usa la cuenta con casa central de Yesterday y, en el puente, la cuenta
+        con sucursales de la casa central.
+        """
+        dow = self._another_branch("Dow")
+        self._enable_branch_as_payer(self.yesterday)
+        journal = self._branch_bank(self.yesterday)
+        own = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        fisa = self._invoice(self.fisa, "in_invoice", self.vendor, 50)
+        other = self._invoice(dow, "in_invoice", self.vendor, 30)
+        lines = self._debt_lines(own | fisa | other)
+        payment = self._payment("supplier", self.vendor, lines, company=self.yesterday, journal=journal)
+        payment.kai_advance_company_id = self.company
+        payment.amount = 220
+        self.assertEqual(payment.kai_advance_company_id, self.company)
+        payment.action_post()
+
+        self._assert_reconciled(lines)
+        self._assert_move_balanced(payment.move_id)
+        self.assertEqual(payment.move_id.company_id, self.yesterday)
+        payable = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        )
+        self.assertEqual(len(payable), 1)
+        self.assertAlmostEqual(payable.balance, 100.0, places=2)
+        branch_cc = self.yesterday.kai_branch_current_account_id
+        to_branches = payment.move_id.line_ids.filtered(lambda line: line.account_id == branch_cc)
+        self.assertAlmostEqual(sum(to_branches.mapped("balance")), 80.0, places=2)
+        self.assertEqual(set(to_branches.mapped("kai_settled_company_id").ids), {self.fisa.id, dow.id})
+        to_central = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id == self.yesterday.kai_central_current_account_id
+            and line.kai_settled_company_id == self.company
+        )
+        self.assertEqual(len(to_central), 1)
+        self.assertAlmostEqual(to_central.balance, 40.0, places=2)
+        self.assertEqual(to_central.partner_id, self.company.partner_id)
+        self.assertEqual(set(payment.kai_bridge_move_ids.company_id.ids), {self.company.id, self.fisa.id, dow.id})
+        central_bridge = self._bridge(payment, self.company)
+        advance = self._advance_line(central_bridge, "liability_payable")
+        self.assertAlmostEqual(advance.balance, 40.0, places=2)
+        self.assertAlmostEqual(advance.amount_residual, 40.0, places=2)
+        self.assertFalse(advance.reconciled)
+        self.assertEqual(advance.partner_id, self.vendor.commercial_partner_id)
+        central_cc = central_bridge.line_ids.filtered(
+            lambda line: line.account_id == self.company.kai_branch_current_account_id
+        )
+        self.assertAlmostEqual(sum(central_cc.mapped("balance")), -40.0, places=2)
+        self.assertEqual(central_cc.partner_id, self.yesterday.partner_id)
+        self.assertFalse(central_bridge.line_ids.filtered(
+            lambda line: line.account_id == self.cc_central
+        ))
+        for branch, amount in ((self.fisa, 50.0), (dow, 30.0)):
+            bridge = self._bridge(payment, branch)
+            self._assert_move_balanced(bridge)
+            cc = bridge.line_ids.filtered(lambda line: line.account_id == branch.kai_central_current_account_id)
+            self.assertAlmostEqual(sum(cc.mapped("balance")), -amount, places=2)
+            self.assertEqual(cc.partner_id, self.yesterday.partner_id)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 40.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -220.0, places=2)
+
+    def test_sucursal_paga_tres_sucursales_anticipo_en_casa_central_con_retencion(self):
+        dow = self._another_branch("Dow retencion")
+        self._enable_branch_as_payer(self.yesterday)
+        journal = self._branch_bank(self.yesterday)
+        lines = self._debt_lines(
+            self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+            | self._invoice(self.fisa, "in_invoice", self.vendor, 50)
+            | self._invoice(dow, "in_invoice", self.vendor, 30)
+        )
+        payment = self._payment("supplier", self.vendor, lines, company=self.yesterday, journal=journal)
+        payment.payment_method_line_id = journal.outbound_payment_method_line_ids.filtered(
+            lambda line: line.code == "manual"
+        )[:1]
+        withholding = self._add_withholding(payment)
+        payment.kai_advance_company_id = self.company
+        payment.amount = 220.0 - withholding.amount
+        payment.action_post()
+
+        tax_account = withholding.tax_id.invoice_repartition_line_ids.filtered(
+            lambda line: line.repartition_type == "tax"
+        ).account_id
+        self._assert_withholding_on_payer(payment, 220.0, account=tax_account)
+        self.assertFalse(payment.kai_bridge_move_ids.line_ids.filtered(
+            lambda line: line.account_id == tax_account
+        ))
+        to_central = payment.move_id.line_ids.filtered(
+            lambda line: line.kai_settled_company_id == self.company
+        )
+        self.assertAlmostEqual(to_central.balance, 40.0, places=2)
+        self.assertEqual(to_central.account_id, self.yesterday.kai_central_current_account_id)
+        advance = self._advance_line(self._bridge(payment, self.company), "liability_payable")
+        self.assertAlmostEqual(advance.amount_residual, 40.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+        for bridge in payment.kai_bridge_move_ids:
+            self._assert_move_balanced(bridge)
+
+    def test_anticipo_en_la_compania_del_pago(self):
+        """El excedente queda en Yesterday, en la cuenta a pagar, sin puente propio."""
+        self._enable_branch_as_payer(self.yesterday)
+        journal = self._branch_bank(self.yesterday)
+        fisa = self._invoice(self.fisa, "in_invoice", self.vendor, 50)
+        lines = self._debt_lines(fisa)
+        payment = self._payment("supplier", self.vendor, lines, company=self.yesterday, journal=journal)
+        payment.kai_advance_company_id = self.yesterday
+        payment.amount = 80
+        payment.action_post()
+
+        self._assert_reconciled(lines)
+        self._assert_move_balanced(payment.move_id)
+        self.assertEqual(payment.kai_bridge_move_ids.company_id, self.fisa)
+        payable = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        )
+        self.assertEqual(len(payable), 1)
+        self.assertEqual(payable.partner_id, self.vendor.commercial_partner_id)
+        # Yesterday no tiene factura propia: la línea a pagar es solo el anticipo.
+        # Los 50 de Fisa van a la cuenta corriente y el pago de 80 cierra el asiento.
+        self.assertAlmostEqual(payable.balance, 30.0, places=2)
+        self.assertAlmostEqual(payable.amount_residual, 30.0, places=2)
+        self.assertFalse(payable.reconciled)
+        cc = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id == self.yesterday.kai_branch_current_account_id
+        )
+        self.assertAlmostEqual(cc.balance, 50.0, places=2)
+        self.assertEqual(cc.kai_settled_company_id, self.fisa)
+        bridge = self._bridge(payment, self.fisa)
+        self.assertFalse(bridge.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable" and not line.kai_debt_move_line_id
+        ))
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 30.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.fisa, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -80.0, places=2)
+
+    def test_sucursal_paga_deuda_de_la_casa_central(self):
+        self._enable_branch_as_payer(self.yesterday)
+        journal = self._branch_bank(self.yesterday)
+        central = self._invoice(self.company, "in_invoice", self.vendor, 80)
+        lines = self._debt_lines(central)
+        payment = self._payment("supplier", self.vendor, lines, company=self.yesterday, journal=journal)
+        payment.action_post()
+
+        self._assert_reconciled(lines)
+        self._assert_move_balanced(payment.move_id)
+        self.assertEqual(payment.kai_bridge_move_ids.company_id, self.company)
+        cc = payment.move_id.line_ids.filtered(lambda line: line.kai_settled_company_id == self.company)
+        self.assertEqual(len(cc), 1)
+        self.assertEqual(cc.account_id, self.yesterday.kai_central_current_account_id)
+        self.assertEqual(cc.partner_id, self.company.partner_id)
+        self.assertAlmostEqual(cc.balance, 80.0, places=2)
+        self.assertFalse(payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        ))
+        bridge = self._bridge(payment, self.company)
+        central_cc = bridge.line_ids.filtered(
+            lambda line: line.account_id == self.company.kai_branch_current_account_id
+        )
+        self.assertAlmostEqual(sum(central_cc.mapped("balance")), -80.0, places=2)
+        self.assertEqual(central_cc.partner_id, self.yesterday.partner_id)
+        self.assertFalse(bridge.line_ids.filtered(lambda line: line.account_id == self.cc_central))
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -80.0, places=2)
+
+    def test_sucursal_paga_casa_central_con_retencion(self):
+        self._enable_branch_as_payer(self.yesterday)
+        journal = self._branch_bank(self.yesterday)
+        lines = self._debt_lines(self._invoice(self.company, "in_invoice", self.vendor, 100))
+        payment = self._payment("supplier", self.vendor, lines, company=self.yesterday, journal=journal)
+        payment.payment_method_line_id = journal.outbound_payment_method_line_ids.filtered(
+            lambda line: line.code == "manual"
+        )[:1]
+        withholding = self._add_withholding(payment)
+        payment.amount = 100.0 - withholding.amount
+        payment.action_post()
+
+        tax_account = withholding.tax_id.invoice_repartition_line_ids.filtered(
+            lambda line: line.repartition_type == "tax"
+        ).account_id
+        self._assert_withholding_on_payer(payment, 100.0, account=tax_account)
+        self._assert_reconciled(lines)
+        cc = payment.move_id.line_ids.filtered(lambda line: line.kai_settled_company_id == self.company)
+        self.assertAlmostEqual(cc.balance, 100.0, places=2)
+        self.assertEqual(cc.account_id, self.yesterday.kai_central_current_account_id)
+        bridge = self._bridge(payment, self.company)
+        self.assertFalse(bridge.line_ids.filtered(lambda line: line.account_id == tax_account))
+        central_cc = bridge.line_ids.filtered(
+            lambda line: line.account_id == self.company.kai_branch_current_account_id
+        )
+        self.assertAlmostEqual(sum(central_cc.mapped("balance")), -100.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+        self._assert_move_balanced(bridge)
