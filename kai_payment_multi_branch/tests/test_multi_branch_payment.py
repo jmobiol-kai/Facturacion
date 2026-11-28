@@ -1,62 +1,296 @@
 from datetime import timedelta
 from unittest.mock import patch
 
-from odoo import Command, _, fields
-from odoo.addons.account.tests.common import AccountTestInvoicingCommon
+from odoo import SUPERUSER_ID, Command, _, api, fields
 from odoo.exceptions import UserError
-from odoo.tests import tagged
+from odoo.tests import TransactionCase, tagged
 
 DEBT_TYPES = ("asset_receivable", "liability_payable")
+# El nombre de res.company es único en toda la base. 00blinis ya tiene
+# Yesterday y Fisa. El sufijo deja estos registros fuera de esos datos.
+TEST_TAG = "KTEST"
 
 
 @tagged("post_install", "-at_install")
-class TestMultiBranchPayment(AccountTestInvoicingCommon):
+class TestMultiBranchPayment(TransactionCase):
+    """Pagos y recibos entre sucursales de la misma entidad.
+
+    No hereda ``AccountTestInvoicingCommon``. Esa clase pasa por
+    ``BaseCommon``, que cambia el entorno a un usuario de test, y por
+    ``UomCommon``, que hace ``uom_dozen.active = True``. En Odoo 19 esa
+    asignación llama a ``write()``, y ``write()`` controla el acceso antes
+    de mirar si el valor cambió. En 00blinis la escritura de ``uom.uom`` la
+    da un grupo custom sin xmlid, no ``uom.group_uom``. ``TransactionCase``
+    deja el superusuario y el control de acceso no corre.
+
+    La casa central, Yesterday, Fisa, los diarios, las cuentas, el proveedor
+    y el cliente se crean en esta transacción. Cada test arma sus facturas.
+    """
 
     @classmethod
-    @AccountTestInvoicingCommon.setup_country("ar")
-    @AccountTestInvoicingCommon.setup_chart_template("ar_ri")
     def setUpClass(cls):
         super().setUpClass()
-        cls.env = cls.env(su=True)
-        cls.company = cls.env.company
-        cls.company.use_payment_pro = True
-        # CUIT válido. En una base con el plan argentino el contacto ya es CUIT
-        # y un dígito verificador mal formado (el 30712345679 anterior) corta
-        # el setUpClass al crear las sucursales.
+        cls.env = api.Environment(cls.cr, SUPERUSER_ID, {})
+        currency = cls.env.ref("base.ARS", raise_if_not_found=False) or cls.env.company.currency_id
+        if currency and not currency.active:
+            currency.active = True
+        country = cls.env.ref("base.ar", raise_if_not_found=False)
+        cls.company = cls.env["res.company"].with_context(no_vat_validation=True).create({
+            "name": cls._test_name("Casa central"),
+            "currency_id": currency.id,
+            "country_id": country.id if country else False,
+        })
+        cls.env = api.Environment(cls.cr, SUPERUSER_ID, {"allowed_company_ids": [cls.company.id]})
+        cls.company = cls.env["res.company"].browse(cls.company.id)
+        if "use_payment_pro" in cls.company._fields:
+            cls.company.use_payment_pro = True
+        # CUIT válido. Un dígito verificador mal formado corta el alta de las sucursales.
         cls.company.with_context(no_vat_validation=True).vat = "30111111118"
         cls._identify_as_cuit(cls.company.partner_id)
-        cls.bank_journal = cls.env["account.journal"].browse(cls.company_data["default_journal_bank"].id)
+        responsibility = cls.env.ref("l10n_ar.res_IVARI", raise_if_not_found=False)
+        if responsibility and "l10n_ar_afip_responsibility_type_id" in cls.company._fields:
+            cls.company.l10n_ar_afip_responsibility_type_id = responsibility
+        # El plan se carga como superusuario, sin pasar por UomCommon.
+        # Las sucursales heredan el chart_template del padre al crearse.
+        cls._load_chart(cls.company)
         cls.yesterday = cls._branch("Yesterday")
         cls.fisa = cls._branch("Fisa")
         cls.env.flush_all()
         cls.cr.precommit.run()
-        cls._ensure_general_journal(cls.company)
-        cls._ensure_general_journal(cls.yesterday)
-        cls._ensure_general_journal(cls.fisa)
         companies = cls.company | cls.yesterday | cls.fisa
-        cls.cc_branches = cls.env["account.account"].create({
-            "name": "Cuenta corriente con sucursales",
-            "code": "91190001",
-            "account_type": "asset_current",
-            "reconcile": False,
-            "company_ids": [Command.set(companies.ids)],
-        })
-        cls.cc_central = cls.env["account.account"].create({
-            "name": "Cuenta corriente con casa central",
-            "code": "92190001",
-            "account_type": "liability_current",
-            "reconcile": False,
-            "company_ids": [Command.set(companies.ids)],
-        })
+        cls.env = api.Environment(cls.cr, SUPERUSER_ID, {"allowed_company_ids": companies.ids})
+        cls.company = cls.env["res.company"].browse(cls.company.id)
+        cls.yesterday = cls.env["res.company"].browse(cls.yesterday.id)
+        cls.fisa = cls.env["res.company"].browse(cls.fisa.id)
+        companies = cls.company | cls.yesterday | cls.fisa
+        ar = cls.env.ref("base.ar", raise_if_not_found=False)
+        for company in companies:
+            cls._load_chart(company)
+            if ar and "account_fiscal_country_id" in company._fields:
+                company.account_fiscal_country_id = ar
+            if responsibility and "l10n_ar_afip_responsibility_type_id" in company._fields:
+                if not company.l10n_ar_afip_responsibility_type_id:
+                    company.l10n_ar_afip_responsibility_type_id = responsibility
+            if "use_payment_pro" in company._fields:
+                company.use_payment_pro = True
+            cls._ensure_general_journal(company)
+        cls.expense_account = cls._chart_or_shared(companies, "expense", "Gastos test")
+        cls.revenue_account = cls._chart_or_shared(companies, "income", "Ingresos test")
+        cls.payable_account = cls._chart_or_shared(
+            companies, "liability_payable", "Proveedores test", reconcile=True,
+        )
+        cls.receivable_account = cls._chart_or_shared(
+            companies, "asset_receivable", "Clientes test", reconcile=True,
+        )
+        cls.bank_journal, cls.bank_account = cls._bank_journal(cls.company)
+        cls._wire_outstanding(cls.bank_journal)
+        cls.cc_branches = cls._shared_account(
+            companies, "Cuenta corriente con sucursales", "asset_current",
+        )
+        cls.cc_central = cls._shared_account(
+            companies, "Cuenta corriente con casa central", "liability_current",
+        )
         cls.company.kai_branch_current_account_id = cls.cc_branches
         cls.yesterday.kai_central_current_account_id = cls.cc_central
         cls.fisa.kai_central_current_account_id = cls.cc_central
-        cls.vendor = cls.env["res.partner"].create({"name": "Proveedor multi sucursal"})
-        cls.customer = cls.env["res.partner"].create({"name": "Cliente multi sucursal"})
+        cls.vendor = cls.env["res.partner"].create({
+            "name": cls._test_name("Proveedor multi sucursal"),
+            "supplier_rank": 1,
+            "company_id": False,
+        })
+        cls.customer = cls.env["res.partner"].create({
+            "name": cls._test_name("Cliente multi sucursal"),
+            "customer_rank": 1,
+            "company_id": False,
+        })
         cls._identify_as_cuit(cls.vendor, "20111111112")
         cls._identify_as_cuit(cls.customer, "20222222223")
+        for company in companies:
+            cls._set_debt_defaults(company, cls.payable_account, cls.receivable_account)
+            for partner in (cls.vendor, cls.customer):
+                cls._set_partner_debt_accounts(company, partner, cls.payable_account, cls.receivable_account)
         cls.wth_tax = cls.env["account.tax"]
         cls.wth_account = cls.env["account.account"]
+
+    def setUp(self):
+        super().setUp()
+        companies = self.company | self.yesterday | self.fisa
+        self.env = self.env(context=dict(self.env.context, allowed_company_ids=companies.ids))
+
+    @classmethod
+    def _load_chart(cls, company):
+        """Plan de la compañía, el mismo ar_ri que usaba AccountTestInvoicingCommon."""
+        if company.chart_template:
+            return
+        country = company.account_fiscal_country_id or company.country_id
+        if not country:
+            country = cls.env.ref("base.ar", raise_if_not_found=False)
+        if country:
+            if not company.country_id:
+                company.country_id = country
+            if "account_fiscal_country_id" in company._fields and not company.account_fiscal_country_id:
+                company.account_fiscal_country_id = country
+        chart = cls.env["account.chart.template"].with_company(company)
+        mapping = chart._get_chart_template_mapping()
+        code = "ar_ri" if "ar_ri" in mapping else chart._guess_chart_template(country)
+        chart.try_loading(code, company, install_demo=False)
+        if country and "account_fiscal_country_id" in company._fields and not company.account_fiscal_country_id:
+            company.account_fiscal_country_id = country
+
+    @classmethod
+    def _chart_or_shared(cls, companies, account_type, name, reconcile=False):
+        """Una cuenta del plan visible para todas las compañías, o una nueva compartida.
+
+        Banco y efectivo no se comparten: ese caso no entra por acá.
+        """
+        if account_type == "asset_cash":
+            raise AssertionError("Una cuenta de banco o efectivo no se comparte.")
+        account_model = cls.env["account.account"].with_company(companies[:1])
+        account = account_model.search([
+            *account_model._check_company_domain(companies[:1]),
+            ("account_type", "=", account_type),
+        ], limit=1)
+        # Solo se reutiliza si ya cubre a todas las compañías. No se le agregan
+        # compañías a una cuenta del plan: banco y efectivo no se comparten, y
+        # el resto se crea aparte cuando el plan es por compañía.
+        if account and not (companies - account.sudo().company_ids):
+            return account
+        return cls._shared_account(companies, name, account_type, reconcile=reconcile)
+
+    @classmethod
+    def _bank_journal(cls, company):
+        """Diario bancario de la casa central, con su cuenta de efectivo propia."""
+        journal = cls.env["account.journal"].search([
+            ("company_id", "=", company.id),
+            ("type", "=", "bank"),
+        ], limit=1)
+        if journal and journal.default_account_id:
+            return journal, journal.default_account_id
+        account = cls._company_account(company, "Banco test", "asset_cash")
+        if journal:
+            journal.default_account_id = account
+            return journal, account
+        journal_model = cls.env["account.journal"]
+        vals = {
+            "name": cls._test_name("Banco casa central"),
+            "code": cls._free_journal_code(company, "BCT1"),
+            "type": "bank",
+            "company_id": company.id,
+            "default_account_id": account.id,
+        }
+        if "suspense_account_id" in journal_model._fields:
+            vals["suspense_account_id"] = cls._company_account(
+                company, "Suspenso banco test", "asset_current",
+            ).id
+        journal = journal_model.with_company(company).create(vals)
+        return journal, account
+
+    @classmethod
+    def _wire_outstanding(cls, journal):
+        """Sin cuenta de pagos pendientes el pago no genera asiento.
+
+        Es lo que hacía AccountTestInvoicingCommon con las líneas manual del
+        diario bancario del plan. Banco y efectivo no sirven: tienen que ser
+        cuentas a conciliar de activo corriente, de una sola compañía.
+        """
+        company = journal.company_id
+        template = cls.env["account.chart.template"].with_company(company)
+        outbound = template.ref("account_journal_payment_credit_account_id", raise_if_not_found=False)
+        inbound = template.ref("account_journal_payment_debit_account_id", raise_if_not_found=False)
+        if not outbound or outbound.account_type == "asset_cash":
+            outbound = cls._company_account(company, "Pagos pendientes", "asset_current", reconcile=True)
+        if not inbound or inbound.account_type == "asset_cash":
+            inbound = cls._company_account(company, "Cobros pendientes", "asset_current", reconcile=True)
+        if "account_journal_payment_credit_account_id" in company._fields:
+            company.account_journal_payment_credit_account_id = outbound
+        if "account_journal_payment_debit_account_id" in company._fields:
+            company.account_journal_payment_debit_account_id = inbound
+        for line in journal.outbound_payment_method_line_ids:
+            if not line.payment_account_id and line.code in ("manual", "electronic"):
+                line.payment_account_id = outbound
+        for line in journal.inbound_payment_method_line_ids:
+            if not line.payment_account_id and line.code in ("manual", "electronic"):
+                line.payment_account_id = inbound
+        outbound_first = journal.outbound_payment_method_line_ids.filtered(lambda line: line.code == "manual")[:1]
+        inbound_first = journal.inbound_payment_method_line_ids.filtered(lambda line: line.code == "manual")[:1]
+        if not outbound_first:
+            outbound_first = journal.outbound_payment_method_line_ids[:1]
+        if not inbound_first:
+            inbound_first = journal.inbound_payment_method_line_ids[:1]
+        if outbound_first and not outbound_first.payment_account_id:
+            outbound_first.payment_account_id = outbound
+        if inbound_first and not inbound_first.payment_account_id:
+            inbound_first.payment_account_id = inbound
+
+    @classmethod
+    def _set_debt_defaults(cls, company, payable, receivable):
+        """Valor por defecto de a pagar y a cobrar para esa compañía."""
+        defaults = cls.env["ir.default"].sudo()
+        if not hasattr(defaults, "set"):
+            return
+        if payable and company in payable.company_ids:
+            defaults.set("res.partner", "property_account_payable_id", payable.id, company_id=company.id)
+        if receivable and company in receivable.company_ids:
+            defaults.set("res.partner", "property_account_receivable_id", receivable.id, company_id=company.id)
+
+    @classmethod
+    def _set_partner_debt_accounts(cls, company, partner, payable, receivable):
+        partner = partner.with_company(company)
+        if payable and company in payable.company_ids:
+            partner.property_account_payable_id = payable
+        if receivable and company in receivable.company_ids:
+            partner.property_account_receivable_id = receivable
+
+    def _ensure_company_debt_accounts(self, company, partner):
+        """La factura de una compañía nueva (otra entidad) también necesita a pagar y a cobrar."""
+        self._load_chart(company)
+        if "account_fiscal_country_id" in company._fields and not company.account_fiscal_country_id:
+            country = company.country_id or self.env.ref("base.ar", raise_if_not_found=False)
+            if country:
+                company.account_fiscal_country_id = country
+        payable = self.payable_account if company in self.payable_account.company_ids else self.env["account.account"]
+        receivable = self.receivable_account if company in self.receivable_account.company_ids else self.env["account.account"]
+        if not payable:
+            payable = self.env["account.account"].with_company(company).search([
+                *self.env["account.account"]._check_company_domain(company),
+                ("account_type", "=", "liability_payable"),
+            ], limit=1)
+        if not receivable:
+            receivable = self.env["account.account"].with_company(company).search([
+                *self.env["account.account"]._check_company_domain(company),
+                ("account_type", "=", "asset_receivable"),
+            ], limit=1)
+        if not payable:
+            payable = self._company_account(company, "Proveedores", "liability_payable", reconcile=True)
+        if not receivable:
+            receivable = self._company_account(company, "Clientes", "asset_receivable", reconcile=True)
+        self._set_debt_defaults(company, payable, receivable)
+        if partner:
+            self._set_partner_debt_accounts(company, partner, payable, receivable)
+        return payable, receivable
+
+    @classmethod
+    def _company_account(cls, company, name, account_type, reconcile=False):
+        """Cuenta de una sola compañía. Banco y efectivo tienen que ir por acá."""
+        return cls._shared_account(company, name, account_type, reconcile=reconcile)
+
+    @classmethod
+    def _shared_account(cls, companies, name, account_type, reconcile=False):
+        if account_type == "asset_cash" and len(companies) > 1:
+            raise AssertionError(
+                "Una cuenta de banco o efectivo no se puede compartir entre compañías."
+            )
+        account_model = cls.env["account.account"].with_company(companies[:1])
+        vals = {
+            "name": cls._test_name(name),
+            # El código es único dentro de la compañía y de su jerarquía.
+            "code": account_model._search_new_account_code("91100000", cache=set()),
+            "account_type": account_type,
+            "company_ids": [Command.set(companies.ids)],
+        }
+        if reconcile:
+            vals["reconcile"] = True
+        return account_model.create(vals)
 
     @classmethod
     def _identify_as_cuit(cls, partner, vat=None):
@@ -78,11 +312,31 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
             partner.with_context(no_vat_validation=True).write(vals)
 
     @classmethod
+    def _test_name(cls, name):
+        return f"{name} {TEST_TAG}"
+
+    @classmethod
+    def _free_journal_code(cls, company, preferred):
+        """Código de diario libre en esa compañía. El índice es (compañía, código)."""
+        taken = set(cls.env["account.journal"].with_context(active_test=False).search([
+            ("company_id", "=", company.id),
+        ]).mapped("code"))
+        preferred = (preferred or "").upper()[:5]
+        if preferred and preferred not in taken:
+            return preferred
+        for index in range(1, 10000):
+            code = f"K{index:04d}"[:5]
+            if code not in taken:
+                return code
+        raise AssertionError(f"No hay código de diario libre en {company.display_name}")
+
+    @classmethod
     def _branch(cls, name):
         vals = {
-            "name": name,
+            "name": cls._test_name(name),
             "parent_id": cls.company.id,
             "vat": cls.company.vat,
+            "currency_id": cls.company.currency_id.id,
             "country_id": cls.company.country_id.id,
         }
         if (
@@ -96,17 +350,16 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
 
     @classmethod
     def _ensure_general_journal(cls, company):
-        journal = cls.env["account.journal"].search([
-            ("company_id", "=", company.id),
-            ("type", "=", "general"),
-        ], limit=1)
-        if not journal:
-            cls.env["account.journal"].create({
-                "name": "Operaciones varias",
-                "code": "OPV",
-                "type": "general",
-                "company_id": company.id,
-            })
+        # El puente no usa el diario de punto de venta. Si el plan no dejó
+        # uno de operaciones varias, se crea con el nombre que el módulo busca.
+        if cls.env["account.payment"]._kai_default_misc_journal(company):
+            return
+        cls.env["account.journal"].with_company(company).create({
+            "name": "Operaciones varias",
+            "code": cls._free_journal_code(company, "OPV"),
+            "type": "general",
+            "company_id": company.id,
+        })
 
     def _invoice_journal(self, company, move_type):
         """Diario sin comprobantes fiscales.
@@ -116,32 +369,42 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         comprobante, así que usan un diario que no documenta.
         """
         journal_model = self.env["account.journal"]
-        if "l10n_latam_use_documents" not in journal_model._fields:
-            return journal_model
-        if not company._localization_use_documents():
-            return journal_model
         journal_type = "purchase" if move_type in ("in_invoice", "in_refund") else "sale"
-        journal = journal_model.search([
+        domain = [
             ("company_id", "=", company.id),
             ("type", "=", journal_type),
-            ("l10n_latam_use_documents", "=", False),
-        ], limit=1)
+        ]
+        if (
+            "l10n_latam_use_documents" in journal_model._fields
+            and company._localization_use_documents()
+        ):
+            domain.append(("l10n_latam_use_documents", "=", False))
+        journal = journal_model.search(domain, limit=1)
         if journal:
             return journal
-        return journal_model.create({
-            "name": "Compras internas" if journal_type == "purchase" else "Ventas internas",
-            "code": "CINT" if journal_type == "purchase" else "VINT",
+        vals = {
+            "name": self._test_name("Compras internas" if journal_type == "purchase" else "Ventas internas"),
+            "code": self._free_journal_code(company, "CINT" if journal_type == "purchase" else "VINT"),
             "type": journal_type,
             "company_id": company.id,
-            "l10n_latam_use_documents": False,
-        })
+        }
+        if "l10n_latam_use_documents" in journal_model._fields:
+            vals["l10n_latam_use_documents"] = False
+        return journal_model.with_company(company).create(vals)
 
     def _invoice(self, company, move_type, partner, amount):
+        self._ensure_company_debt_accounts(company, partner)
         account = (
-            self.company_data["default_account_expense"]
+            self.expense_account
             if move_type in ("in_invoice", "in_refund")
-            else self.company_data["default_account_revenue"]
+            else self.revenue_account
         )
+        if company not in account.company_ids:
+            account = self._company_account(
+                company,
+                "Gastos" if account.account_type == "expense" else "Ingresos",
+                account.account_type,
+            )
         vals = {
             "move_type": move_type,
             "company_id": company.id,
@@ -195,9 +458,11 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         line = self.bank_journal.outbound_payment_method_line_ids.filtered("payment_account_id")[:1]
         if line:
             return line.payment_account_id
-        return self.env["account.account"].create({
-            "name": "Cheques propios a debitar",
-            "code": "91180001",
+        return self.env["account.account"].with_company(self.company).create({
+            "name": self._test_name("Cheques propios a debitar"),
+            "code": self.env["account.account"].with_company(self.company)._search_new_account_code(
+                "91180000", cache=set(),
+            ),
             "account_type": "asset_current",
             "reconcile": True,
             "company_ids": [Command.set(self.company.ids)],
@@ -237,9 +502,10 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         return payment
 
     def _check_bank(self):
-        bank = self.env["res.bank"].search([("name", "=", "Banco cheques test")], limit=1)
+        bank_name = self._test_name("Banco cheques")
+        bank = self.env["res.bank"].search([("name", "=", bank_name)], limit=1)
         if not bank:
-            bank = self.env["res.bank"].create({"name": "Banco cheques test"})
+            bank = self.env["res.bank"].create({"name": bank_name})
         return bank
 
     def _method_line(self, journal, code):
@@ -251,17 +517,19 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         journal = getattr(self, "checks_journal", self.env["account.journal"])
         if journal:
             return journal
-        account = self.env["account.account"].create({
-            "name": "Cheques de terceros en cartera",
-            "code": "11130001",
+        account = self.env["account.account"].with_company(self.company).create({
+            "name": self._test_name("Cheques de terceros en cartera"),
+            "code": self.env["account.account"].with_company(self.company)._search_new_account_code(
+                "11130000", cache=set(),
+            ),
             "account_type": "asset_current",
             "reconcile": True,
             "company_ids": [Command.set(self.company.ids)],
         })
         self.third_party_account = account
         journal = self.env["account.journal"].create({
-            "name": "Cartera cheques de terceros",
-            "code": "CH3",
+            "name": self._test_name("Cartera cheques de terceros"),
+            "code": self._free_journal_code(self.company, "CH3"),
             "type": "cash",
             "company_id": self.company.id,
         })
@@ -362,16 +630,17 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         if self.wth_tax:
             return self.wth_tax
         companies = self.company | self.yesterday | self.fisa
-        self.wth_account = self.env["account.account"].create({
-            "name": "Retención ganancias a depositar",
-            "code": "21420001",
+        account_model = self.env["account.account"].with_company(self.company)
+        self.wth_account = account_model.create({
+            "name": self._test_name("Retención ganancias a depositar"),
+            "code": account_model._search_new_account_code("21420000", cache=set()),
             "account_type": "liability_current",
             "reconcile": False,
             "company_ids": [Command.set(self.company.ids)],
         })
-        base_account = self.env["account.account"].create({
-            "name": "Base de retenciones",
-            "code": "21420002",
+        base_account = account_model.create({
+            "name": self._test_name("Base de retenciones"),
+            "code": account_model._search_new_account_code("21420000", cache=set()),
             "account_type": "liability_current",
             "reconcile": False,
             "company_ids": [Command.set(companies.ids)],
@@ -652,7 +921,7 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
 
     def test_other_legal_entity_is_rejected(self):
         other = self.env["res.company"].with_context(no_vat_validation=True).create({
-            "name": "Otra SA",
+            "name": self._test_name("Otra SA"),
             "parent_id": self.company.id,
             "vat": "30987654321",
             "country_id": self.company.country_id.id,
@@ -685,7 +954,8 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         payment.amount = 120
         with self.assertRaises(UserError) as error:
             payment.action_post()
-        self.assertIn("exactamente", str(error.exception))
+        self.assertIn("parciales", str(error.exception))
+        self.assertNotIn("anticipos", str(error.exception).lower())
 
     def test_foreign_currency_is_blocked(self):
         bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 40)
@@ -968,7 +1238,7 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         self.assertTrue(by_payment[legacy].eligible)
         self.assertFalse(by_payment[own_payment].eligible)
         self.assertIn("otra sucursal", by_payment[own_payment].reason)
-        other_vendor = self.env["res.partner"].create({"name": "Proveedor bloqueado"})
+        other_vendor = self.env["res.partner"].create({"name": self._test_name("Proveedor bloqueado")})
         blocked = self._legacy_payment(
             "supplier",
             other_vendor,
@@ -998,16 +1268,16 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
 
     def test_bridge_journal_uses_miscellaneous_not_point_of_sale(self):
         company = self.yesterday
-        self.env["account.journal"].create({
+        self.env["account.journal"].with_company(company).create({
             "name": "Punto de venta",
-            "code": "POSS",
+            "code": self._free_journal_code(company, "POSS"),
             "type": "general",
             "company_id": company.id,
             "sequence": 1,
         })
-        misce = self.env["account.journal"].create({
+        misce = self.env["account.journal"].with_company(company).create({
             "name": "Operaciones misceláneas",
-            "code": "MISCE",
+            "code": self._free_journal_code(company, "MISCE"),
             "type": "general",
             "company_id": company.id,
             "sequence": 50,
@@ -1022,9 +1292,9 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         payment.action_post()
         self.assertEqual(payment.kai_bridge_move_ids.journal_id, misce)
 
-        custom = self.env["account.journal"].create({
-            "name": "Puentes sucursal",
-            "code": "PUEN",
+        custom = self.env["account.journal"].with_company(company).create({
+            "name": self._test_name("Puentes sucursal"),
+            "code": self._free_journal_code(company, "PUEN"),
             "type": "general",
             "company_id": company.id,
         })
@@ -1041,9 +1311,9 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         ]):
             if not self.env["account.payment"]._kai_journal_is_reserved(journal):
                 journal.active = False
-        self.env["account.journal"].create({
+        self.env["account.journal"].with_company(self.fisa).create({
             "name": "Punto de venta",
-            "code": "POSS",
+            "code": self._free_journal_code(self.fisa, "POSS"),
             "type": "general",
             "company_id": self.fisa.id,
             "sequence": 1,
@@ -1131,9 +1401,9 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         payment = self._payment("supplier", self.vendor, lines)
         payment.action_post()
         user = self.env["res.users"].create({
-            "name": "Contable central",
-            "login": "contable_central_mb",
-            "email": "contable_central_mb@example.com",
+            "name": self._test_name("Contable central"),
+            "login": "contable_central_ktest",
+            "email": "contable_central_ktest@example.com",
             "company_id": self.company.id,
             "company_ids": [Command.set(self.company.ids)],
             "group_ids": [Command.set([
@@ -1178,3 +1448,272 @@ class TestMultiBranchPayment(AccountTestInvoicingCommon):
         self.assertNotIn("Regularización", text)
         self.assertNotIn("On account", text)
         self.assertNotIn("A cuenta", text)
+
+    def _cc_line(self, payment, company):
+        lines = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id == self.cc_branches and line.kai_settled_company_id == company
+        )
+        self.assertEqual(len(lines), 1)
+        return lines
+
+    def _bridge(self, payment, company):
+        bridge = payment.kai_bridge_move_ids.filtered(lambda move: move.company_id == company)
+        self.assertEqual(len(bridge), 1)
+        self._assert_move_balanced(bridge)
+        return bridge
+
+    def _advance_line(self, move, account_type):
+        lines = move.line_ids.filtered(
+            lambda line: line.account_id.account_type == account_type and not line.kai_debt_move_line_id
+        )
+        self.assertEqual(len(lines), 1)
+        return lines
+
+    def _central_balance(self, bridge):
+        lines = bridge.line_ids.filtered(lambda line: line.account_id == self.cc_central)
+        return sum(lines.mapped("balance"))
+
+    def test_anticipo_en_una_sucursal(self):
+        """El 2436 en chico: factura 100 de Yesterday y pago 150 desde la casa central.
+
+        El residual de la línea de anticipo es el que se concilia con una
+        factura posterior de la misma sucursal, el mismo contacto y la misma
+        cuenta a pagar.
+        """
+        bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        lines = self._debt_lines(bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        self.assertEqual(payment.kai_advance_company_id, self.yesterday)
+        payment.amount = 150
+        if payment.move_id and payment.move_id.state == "draft":
+            # El borrador se rearma por _kai_synchronize_multi_branch_move, no solo al confirmar.
+            draft_cc = payment.move_id.line_ids.filtered(lambda line: line.account_id == self.cc_branches)
+            self.assertEqual(len(draft_cc), 1)
+            self.assertAlmostEqual(draft_cc.balance, 150.0, places=2)
+        payment.action_post()
+
+        self._assert_reconciled(lines)
+        self.assertEqual(payment.move_id.company_id, self.company)
+        self._assert_move_balanced(payment.move_id)
+        self.assertFalse(payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        ))
+        cc = self._cc_line(payment, self.yesterday)
+        self.assertEqual(cc.partner_id, self.yesterday.partner_id)
+        self.assertEqual(cc.kai_settled_company_id, self.yesterday)
+        self.assertAlmostEqual(cc.balance, 150.0, places=2)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertFalse(advance.kai_debt_move_line_id)
+        self.assertFalse(advance.reconciled)
+        self.assertEqual(advance.partner_id, self.vendor.commercial_partner_id)
+        self.assertEqual(advance.account_id, lines.account_id)
+        self.assertIn("Anticipo", advance.name)
+        self.assertAlmostEqual(advance.balance, 50.0, places=2)
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        self.assertAlmostEqual(self._central_balance(bridge), -150.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 50.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 150.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), -150.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -150.0, places=2)
+
+        payment.action_draft()
+        lines.invalidate_recordset()
+        self.assertFalse(payment.kai_bridge_move_ids)
+        self.assertFalse(lines.reconciled)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), -100.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 0.0, places=2)
+
+        payment.action_post()
+        self._assert_reconciled(lines)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        future = self._invoice(self.yesterday, "in_invoice", self.vendor, 50)
+        future_lines = self._debt_lines(future)
+        self.assertEqual(advance.account_id, future_lines.account_id)
+        self.assertEqual(advance.partner_id, future_lines.partner_id)
+        (advance + future_lines).with_company(self.yesterday).reconcile()
+        self._assert_reconciled(future_lines)
+        self._assert_reconciled(advance)
+        payment.invalidate_recordset(["matched_move_line_ids"])
+        self.assertIn(future_lines, payment.matched_move_line_ids)
+        self.assertIn(lines, payment.matched_move_line_ids)
+
+        payment.action_cancel()
+        lines.invalidate_recordset()
+        future_lines.invalidate_recordset()
+        self.assertEqual(payment.state, "canceled")
+        self.assertFalse(payment.kai_bridge_move_ids)
+        self.assertFalse(lines.reconciled)
+        self.assertFalse(future_lines.reconciled)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), -150.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), 0.0, places=2)
+
+    def test_anticipo_con_retenciones(self):
+        bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        lines = self._debt_lines(bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        payment.payment_method_line_id = self._manual_method_line()
+        withholding = self._add_withholding(payment)
+        payment.amount = 150.0 - withholding.amount
+        payment.action_post()
+
+        self._assert_withholding_on_payer(payment, 150.0)
+        self.assertFalse(payment.kai_bridge_move_ids.line_ids.filtered(
+            lambda line: line.account_id == self.wth_account
+        ))
+        self._assert_reconciled(lines)
+        self.assertAlmostEqual(self._cc_line(payment, self.yesterday).balance, 150.0, places=2)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        self.assertAlmostEqual(self._central_balance(bridge), -150.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+        self.assertEqual(bridge.company_id, self.yesterday)
+        self.assertEqual(payment.move_id.company_id, self.company)
+
+    def test_anticipo_con_cheques_propios(self):
+        bill = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        lines = self._debt_lines(bill)
+        payment = self._payment("supplier", self.vendor, lines)
+        today = fields.Date.today()
+        self._use_own_checks(payment, [
+            (today, 40.0),
+            (today + timedelta(days=15), 60.0),
+            (today + timedelta(days=45), 50.0),
+        ])
+        payment.amount = 150.0
+        self.assertAlmostEqual(sum(payment.l10n_latam_new_check_ids.mapped("amount")), 150.0, places=2)
+        payment.action_post()
+
+        self._assert_check_lines(payment)
+        self._assert_reconciled(lines)
+        self.assertAlmostEqual(self._cc_line(payment, self.yesterday).balance, 150.0, places=2)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        self.assertAlmostEqual(self._central_balance(bridge), -150.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -150.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+        self.assertFalse(payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        ))
+
+    def test_anticipo_sin_sucursal_elegida_no_se_publica(self):
+        yesterday = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        fisa = self._invoice(self.fisa, "in_invoice", self.vendor, 50)
+        payment = self._payment("supplier", self.vendor, self._debt_lines(yesterday | fisa))
+        self.assertFalse(payment.kai_advance_company_id)
+        payment.amount = 200
+        with self.assertRaises(UserError) as error:
+            payment.action_post()
+        self.assertIn("sucursal del anticipo", str(error.exception).lower())
+        self.assertFalse(payment.kai_bridge_move_ids)
+        if payment.move_id:
+            self.assertNotEqual(payment.move_id.state, "posted")
+
+    def test_anticipo_en_la_sucursal_elegida(self):
+        """Deuda Yesterday 100 y Fisa 50, pago 200.
+
+        El anticipo es el bruto menos toda la deuda: 50, y queda en Yesterday.
+        La cuenta corriente de Yesterday queda en 150 y la de Fisa en 50. La
+        intercompañía suma 200, el bruto del pago.
+        """
+        yesterday = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        fisa = self._invoice(self.fisa, "in_invoice", self.vendor, 50)
+        yesterday_lines = self._debt_lines(yesterday)
+        fisa_lines = self._debt_lines(fisa)
+        payment = self._payment("supplier", self.vendor, yesterday_lines | fisa_lines)
+        payment.kai_advance_company_id = self.yesterday
+        payment.amount = 200
+        self.assertEqual(payment.kai_advance_company_id, self.yesterday)
+        payment.action_post()
+
+        self._assert_reconciled(yesterday_lines | fisa_lines)
+        self.assertAlmostEqual(self._cc_line(payment, self.yesterday).balance, 150.0, places=2)
+        self.assertAlmostEqual(self._cc_line(payment, self.fisa).balance, 50.0, places=2)
+        yesterday_bridge = self._bridge(payment, self.yesterday)
+        fisa_bridge = self._bridge(payment, self.fisa)
+        advance = self._advance_line(yesterday_bridge, "liability_payable")
+        self.assertAlmostEqual(advance.balance, 50.0, places=2)
+        self.assertAlmostEqual(advance.amount_residual, 50.0, places=2)
+        self.assertFalse(advance.reconciled)
+        self.assertFalse(fisa_bridge.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable" and not line.kai_debt_move_line_id
+        ))
+        self.assertAlmostEqual(self._central_balance(yesterday_bridge), -150.0, places=2)
+        self.assertAlmostEqual(self._central_balance(fisa_bridge), -50.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 200.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), -150.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.fisa), -50.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+
+    def test_recibo_de_cliente_con_anticipo(self):
+        invoice = self._invoice(self.yesterday, "out_invoice", self.customer, 100)
+        lines = self._debt_lines(invoice)
+        payment = self._payment("customer", self.customer, lines)
+        self.assertEqual(payment.kai_advance_company_id, self.yesterday)
+        payment.amount = 150
+        payment.action_post()
+
+        self._assert_reconciled(lines)
+        self.assertFalse(payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "asset_receivable"
+        ))
+        cc = self._cc_line(payment, self.yesterday)
+        self.assertAlmostEqual(cc.balance, -150.0, places=2)
+        self.assertEqual(cc.partner_id, self.yesterday.partner_id)
+        self.assertEqual(cc.kai_settled_company_id, self.yesterday)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "asset_receivable")
+        self.assertEqual(advance.partner_id, self.customer.commercial_partner_id)
+        self.assertFalse(advance.kai_debt_move_line_id)
+        self.assertFalse(advance.reconciled)
+        self.assertAlmostEqual(advance.balance, -50.0, places=2)
+        self.assertAlmostEqual(advance.amount_residual, -50.0, places=2)
+        self.assertAlmostEqual(advance.credit, 50.0, places=2)
+        self.assertAlmostEqual(self._central_balance(bridge), 150.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.customer, "asset_receivable"), -50.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.customer, "asset_receivable"), 0.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), -150.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), 150.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), 150.0, places=2)
+        self._assert_move_balanced(payment.move_id)
+
+    def test_anticipo_con_deuda_de_casa_central_y_una_sucursal(self):
+        central = self._invoice(self.company, "in_invoice", self.vendor, 80)
+        yesterday = self._invoice(self.yesterday, "in_invoice", self.vendor, 100)
+        central_lines = self._debt_lines(central)
+        yesterday_lines = self._debt_lines(yesterday)
+        payment = self._payment("supplier", self.vendor, central_lines | yesterday_lines)
+        self.assertEqual(payment.kai_advance_company_id, self.yesterday)
+        payment.amount = 220
+        payment.action_post()
+
+        self._assert_reconciled(central_lines | yesterday_lines)
+        payable = payment.move_id.line_ids.filtered(
+            lambda line: line.account_id.account_type == "liability_payable"
+        )
+        self.assertEqual(len(payable), 1)
+        self.assertAlmostEqual(payable.balance, 80.0, places=2)
+        self.assertEqual(payable.partner_id, self.vendor.commercial_partner_id)
+        central_match = central_lines.matched_debit_ids | central_lines.matched_credit_ids
+        counterparts = (central_match.debit_move_id | central_match.credit_move_id) - central_lines
+        self.assertTrue(counterparts)
+        self.assertTrue(all(line.move_id == payment.move_id for line in counterparts))
+        self.assertAlmostEqual(self._cc_line(payment, self.yesterday).balance, 140.0, places=2)
+        bridge = self._bridge(payment, self.yesterday)
+        advance = self._advance_line(bridge, "liability_payable")
+        self.assertAlmostEqual(advance.balance, 40.0, places=2)
+        self.assertAlmostEqual(advance.amount_residual, 40.0, places=2)
+        self.assertFalse(advance.reconciled)
+        self.assertAlmostEqual(self._central_balance(bridge), -140.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.company, self.vendor, "liability_payable"), 0.0, places=2)
+        self.assertAlmostEqual(self._partner_balance(self.yesterday, self.vendor, "liability_payable"), 40.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_branches, self.company), 140.0, places=2)
+        self.assertAlmostEqual(self._account_balance(self.cc_central, self.yesterday), -140.0, places=2)
+        self.assertAlmostEqual(self._liquidity_balance(payment), -220.0, places=2)
+        self.assertEqual(payment.kai_bridge_move_ids.company_id, self.yesterday)
+        self._assert_move_balanced(payment.move_id)

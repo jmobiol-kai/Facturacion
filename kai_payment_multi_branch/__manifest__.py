@@ -1,6 +1,6 @@
 {
     "name": "Pagos multi-sucursal",
-    "summary": "Un pago de la casa central cancela facturas de varias sucursales de la misma entidad legal.",
+    "summary": "Un pago de la casa central cancela facturas de otras sucursales. El excedente queda como anticipo en la sucursal.",
     "description": """
 Pago o recibo desde una compañía de la entidad legal que cancela facturas,
 notas de crédito y notas de débito de otras sucursales (mismo CUIT, mismo
@@ -9,18 +9,25 @@ plan de cuentas).
 El asiento del pago deja el banco en la compañía que paga y, por la parte de
 cada otra sucursal (aunque sea una sola), una cuenta corriente con sucursales.
 En cada sucursal se publica un asiento puente que cancela la deuda del
-comprobante contra una cuenta corriente con la casa central. Los saldos de
-proveedores y clientes quedan en cero en cada compañía y las cuentas
+comprobante contra una cuenta corriente con la casa central. Las cuentas
 corrientes se netean en el consolidado.
 
+Si el pago supera la deuda seleccionada, el excedente queda como anticipo
+abierto en la sucursal, en la cuenta a pagar o a cobrar del contacto, sin
+conciliar. La intercompañía se asienta por el bruto, que incluye las
+retenciones: esas retenciones permanecen en quien paga y la sucursal recibe
+el bruto (deuda más anticipo). Los pagos parciales, por un importe menor que
+la deuda, siguen sin estar soportados.
+
 Los pagos ya publicados sin ese puente se corrigen con la acción
-«Regularizar pago existente».
+«Regularizar pago existente». Esa regularización sigue exigiendo el importe
+exacto.
 
 Depende de account_payment_pro, l10n_ar_tax y l10n_latam_check_ux para que
 el reparto entre sucursales corra después del ajuste de retenciones y de
 las líneas de cheques. No envía correos ni trámites de AFIP.
 """,
-    "version": "19.0.1.2.1",
+    "version": "19.0.1.3.5",
     "category": "Accounting/Accounting",
     "author": "Kaizendo",
     "license": "LGPL-3",
