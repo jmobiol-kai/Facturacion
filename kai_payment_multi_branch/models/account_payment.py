@@ -37,16 +37,17 @@ class AccountPayment(models.Model):
     kai_bridge_move_count = fields.Integer(compute="_compute_kai_bridge_move_count")
     kai_advance_company_id = fields.Many2one(
         "res.company",
-        string="Sucursal del anticipo",
+        string="Compañía del anticipo",
         compute="_compute_kai_advance_company_id",
         store=True,
         readonly=False,
         precompute=True,
         copy=False,
         check_company=False,
-        help="Sucursal en la que queda el excedente del pago, como anticipo abierto "
-        "en la cuenta a pagar o a cobrar del contacto. Si la deuda es de una sola "
-        "sucursal, se completa sola. Con varias sucursales hay que elegirla antes de confirmar.",
+        help="Compañía en la que queda el excedente: una sucursal, la casa central "
+        "o la misma compañía del pago. Si es la compañía del pago, el anticipo "
+        "queda en la cuenta a pagar o a cobrar del contacto, sin asiento puente. "
+        "Si la deuda es de una sola sucursal, se completa sola.",
     )
     # La elección del usuario, separada del cómputo. Si no, al recomputar (por
     # ejemplo al confirmar, que invalida las líneas a pagar) se pierde la sucursal
@@ -84,17 +85,18 @@ class AccountPayment(models.Model):
             if not company:
                 payment.kai_advance_company_candidate_ids = False
                 continue
-            payment.kai_advance_company_candidate_ids = company._get_legal_entity_companies() - company
+            # Incluye a quien paga y a la casa central: el anticipo puede quedar ahí.
+            payment.kai_advance_company_candidate_ids = company._get_legal_entity_companies()
 
     @api.depends("company_id", "to_pay_move_line_ids.company_id", "kai_advance_company_manual_id")
     def _compute_kai_advance_company_id(self):
         for payment in self:
             foreign = payment._kai_foreign_companies()
             manual = payment.kai_advance_company_manual_id
-            if len(foreign) == 1:
-                payment.kai_advance_company_id = foreign
-            elif len(foreign) > 1 and payment._kai_advance_company_allowed(manual):
+            if manual and payment._kai_advance_company_allowed(manual):
                 payment.kai_advance_company_id = manual
+            elif len(foreign) == 1:
+                payment.kai_advance_company_id = foreign
             else:
                 payment.kai_advance_company_id = False
 
@@ -124,11 +126,58 @@ class AccountPayment(models.Model):
         return self.to_pay_move_line_ids.company_id - self.company_id
 
     def _kai_advance_company_allowed(self, company):
-        """La sucursal del anticipo es otra compañía de la misma entidad legal."""
+        """El anticipo puede quedar en quien paga, en la casa central o en otra sucursal."""
         self.ensure_one()
-        if not company or not self.company_id or company == self.company_id:
+        if not company or not self.company_id:
             return False
+        if company == self.company_id:
+            return True
         return self._kai_shares_legal_entity(company | self.company_id)
+
+    def _kai_is_head_office(self, company):
+        """La casa central es la compañía raíz, la que no tiene parent_id."""
+        return bool(company) and not company.parent_id
+
+    def _kai_intercompany_sides(self, counterparty):
+        """Cuentas según el rol, no según quién publica el pago.
+
+        Devuelve la cuenta y el partner del asiento del pago, y la cuenta y
+        el partner del puente. Si quien paga es la casa central, es el caso
+        de siempre: cuenta corriente con sucursales en el pago y cuenta
+        corriente con casa central en el puente. Si la contraparte es la
+        casa central, se invierte. Entre dos sucursales no cambia.
+        """
+        self.ensure_one()
+        payer = self.company_id
+        payer_is_central = self._kai_is_head_office(payer)
+        other_is_central = self._kai_is_head_office(counterparty)
+        if other_is_central and not payer_is_central:
+            return (
+                payer.kai_central_current_account_id,
+                counterparty.partner_id,
+                counterparty.kai_branch_current_account_id,
+                payer.partner_id,
+            )
+        return (
+            payer.kai_branch_current_account_id,
+            counterparty.partner_id,
+            counterparty.kai_central_current_account_id,
+            payer.partner_id,
+        )
+
+    def _kai_check_intercompany_pair(self, counterparty):
+        """Exige las cuentas de esta pareja y el diario puente de la contraparte."""
+        self.ensure_one()
+        pay_account, _pay_partner, bridge_account, _bridge_partner = self._kai_intercompany_sides(counterparty)
+        payer_is_central = self._kai_is_head_office(self.company_id)
+        other_is_central = self._kai_is_head_office(counterparty)
+        if other_is_central and not payer_is_central:
+            self._kai_check_current_account(pay_account, self.company_id, "central")
+            self._kai_check_current_account(bridge_account, counterparty, "branches")
+        else:
+            self._kai_check_current_account(pay_account, self.company_id, "branches")
+            self._kai_check_current_account(bridge_account, counterparty, "central")
+        self._kai_bridge_journal(counterparty)
 
     def _kai_is_multi_branch_payment(self):
         """Deuda de otra compañía de la entidad, aunque sea una sola sucursal.
@@ -334,18 +383,8 @@ class AccountPayment(models.Model):
             unposted = payment.to_pay_move_line_ids.filtered(lambda line: line.move_id.state != "posted")
             if unposted:
                 raise UserError(_("Las líneas a pagar tienen que estar publicadas."))
-            payment._kai_check_current_account(
-                payment.company_id.kai_branch_current_account_id,
-                payment.company_id,
-                "branches",
-            )
             for company in companies - payment.company_id:
-                payment._kai_check_current_account(
-                    company.kai_central_current_account_id,
-                    company,
-                    "central",
-                )
-                payment._kai_bridge_journal(company)
+                payment._kai_check_intercompany_pair(company)
 
     def _kai_debt_allocations(self):
         """Amounts of the payment counterpart that fully clear each selected line.
@@ -409,29 +448,23 @@ class AccountPayment(models.Model):
                     advance=self._kai_format_amount(advance),
                 )
             )
-        if company == self.company_id:
-            raise UserError(
-                _(
-                    "El anticipo no puede quedar en %(company)s, que es la compañía del pago. "
-                    "Tiene que quedar abierto en una sucursal.",
-                    company=company.display_name,
-                )
-            )
         if not self._kai_advance_company_allowed(company):
             raise UserError(
                 _(
-                    "La sucursal del anticipo %(company)s tiene que ser de la misma entidad legal que %(payer)s.",
+                    "La compañía del anticipo %(company)s tiene que ser de la misma entidad legal que %(payer)s.",
                     company=company.display_name,
                     payer=self.company_id.display_name,
                 )
             )
-        self._kai_check_current_account(company.kai_central_current_account_id, company, "central")
-        self._kai_bridge_journal(company)
+        # En la compañía del pago el anticipo va a la cuenta a pagar o cobrar, sin puente.
+        if company != self.company_id:
+            self._kai_check_intercompany_pair(company)
         return company
 
     def _kai_branch_counterpart_vals(self, template, company, balance):
         self.ensure_one()
         company_currency = self.company_currency_id
+        pay_account, pay_partner, _bridge_account, _bridge_partner = self._kai_intercompany_sides(company)
         vals = dict(template)
         vals.update(
             {
@@ -440,8 +473,8 @@ class AccountPayment(models.Model):
                     branch=company.name,
                     partner=self.partner_id.display_name,
                 ),
-                "account_id": self.company_id.kai_branch_current_account_id.id,
-                "partner_id": company.partner_id.id,
+                "account_id": pay_account.id,
+                "partner_id": pay_partner.id,
                 "balance": balance,
                 "amount_currency": balance,
                 "currency_id": company_currency.id,
@@ -450,8 +483,42 @@ class AccountPayment(models.Model):
         )
         return vals
 
+    def _kai_add_advance_on_payer(self, new_lines, template, advance_balance):
+        """El anticipo de quien paga queda en la cuenta a pagar o cobrar, sin puente."""
+        currency = self.company_currency_id
+        valid_types = set(self._get_valid_payment_account_types())
+        for vals in new_lines:
+            if vals.get("kai_settled_company_id"):
+                continue
+            account = self.env["account.account"].browse(vals.get("account_id"))
+            if account.account_type in valid_types:
+                balance = currency.round(vals["balance"] + advance_balance)
+                vals["balance"] = balance
+                vals["amount_currency"] = balance
+                return
+        account = self._kai_advance_account(self.company_id, self.env["account.move.line"])
+        vals = dict(template)
+        vals.update(
+            {
+                "name": _(
+                    "Anticipo %(payment)s · %(partner)s",
+                    payment=self.name or self.display_name,
+                    partner=self.partner_id.display_name,
+                ),
+                "account_id": account.id,
+                "partner_id": self.partner_id.commercial_partner_id.id,
+                "balance": advance_balance,
+                "amount_currency": advance_balance,
+                "currency_id": currency.id,
+            }
+        )
+        new_lines.append(vals)
+
     def _kai_add_advance_to_counterpart(self, new_lines, template, company, advance_balance):
-        """Suma el anticipo a la cuenta corriente de la sucursal, o crea esa línea."""
+        """Suma el anticipo a la contrapartida de esa compañía, o crea la línea."""
+        if company == self.company_id:
+            self._kai_add_advance_on_payer(new_lines, template, advance_balance)
+            return
         currency = self.company_currency_id
         for vals in new_lines:
             if vals.get("kai_settled_company_id") == company.id:
@@ -546,9 +613,9 @@ class AccountPayment(models.Model):
     def _seek_for_lines(self):
         liquidity, counterpart, writeoff = super()._seek_for_lines()
         branch_lines = writeoff.filtered("kai_settled_company_id")
-        if not branch_lines and self.company_id.kai_branch_current_account_id and self._kai_is_multi_branch_payment():
-            account = self.company_id.kai_branch_current_account_id
-            branch_lines = writeoff.filtered(lambda line: line.account_id == account)
+        accounts = self.company_id.kai_branch_current_account_id | self.company_id.kai_central_current_account_id
+        if not branch_lines and accounts and self._kai_is_multi_branch_payment():
+            branch_lines = writeoff.filtered(lambda line: line.account_id in accounts)
         if branch_lines:
             counterpart |= branch_lines
             writeoff -= branch_lines
@@ -813,7 +880,7 @@ class AccountPayment(models.Model):
                 if line.company_id == payment.company_id:
                     continue
                 grouped.setdefault(line.company_id, []).append((line, balance))
-            if advance_company:
+            if advance_company and advance_company != payment.company_id:
                 grouped.setdefault(advance_company, [])
             for company, items in grouped.items():
                 company_advance = advance_balance if company == advance_company else 0.0
@@ -863,6 +930,7 @@ class AccountPayment(models.Model):
                     }
                 )
             )
+        _pay_account, _pay_partner, bridge_account, bridge_partner = self._kai_intercompany_sides(company)
         cc_balance = company_currency.round(
             -(sum(balance for _line, balance in items) + advance_balance)
         )
@@ -870,9 +938,9 @@ class AccountPayment(models.Model):
             commands.append(
                 Command.create(
                     {
-                        "name": _("Cuenta corriente %(central)s", central=self.company_id.name),
-                        "account_id": company.kai_central_current_account_id.id,
-                        "partner_id": self.company_id.partner_id.id,
+                        "name": _("Cuenta corriente %(central)s", central=bridge_partner.name or self.company_id.name),
+                        "account_id": bridge_account.id,
+                        "partner_id": bridge_partner.id,
                         "currency_id": company_currency.id,
                         "amount_currency": cc_balance,
                         "balance": cc_balance,
@@ -976,15 +1044,9 @@ class AccountPayment(models.Model):
                 payment=self.display_name,
             )
         try:
-            self._kai_check_current_account(
-                self.company_id.kai_branch_current_account_id,
-                self.company_id,
-                "branches",
-            )
-            for company in foreign.company_id:
-                self._kai_check_current_account(company.kai_central_current_account_id, company, "central")
-                self._kai_bridge_journal(company)
             self._kai_bridge_journal(self.company_id)
+            for company in foreign.company_id:
+                self._kai_check_intercompany_pair(company)
         except UserError as error:
             return str(error)
         return False
@@ -1027,6 +1089,7 @@ class AccountPayment(models.Model):
                     }
                 )
             )
+        pay_account, pay_partner, _bridge_account, _bridge_partner = self._kai_intercompany_sides(company)
         commands.append(
             Command.create(
                 {
@@ -1035,8 +1098,8 @@ class AccountPayment(models.Model):
                         branch=company.name,
                         partner=self.partner_id.display_name,
                     ),
-                    "account_id": self.company_id.kai_branch_current_account_id.id,
-                    "partner_id": company.partner_id.id,
+                    "account_id": pay_account.id,
+                    "partner_id": pay_partner.id,
                     "currency_id": company_currency.id,
                     "amount_currency": total,
                     "balance": total,

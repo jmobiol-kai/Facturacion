@@ -13,11 +13,15 @@ comprobante contra una cuenta corriente con la casa central. Las cuentas
 corrientes se netean en el consolidado.
 
 Si el pago supera la deuda seleccionada, el excedente queda como anticipo
-abierto en la sucursal, en la cuenta a pagar o a cobrar del contacto, sin
-conciliar. La intercompañía se asienta por el bruto, que incluye las
-retenciones: esas retenciones permanecen en quien paga y la sucursal recibe
-el bruto (deuda más anticipo). Los pagos parciales, por un importe menor que
-la deuda, siguen sin estar soportados.
+abierto, en la cuenta a pagar o a cobrar del contacto, sin conciliar. Puede
+quedar en una sucursal, en la casa central o en la misma compañía del pago.
+Si queda en quien paga, no hay puente: la línea está en el asiento del pago.
+La casa central es la compañía raíz. Las cuentas corrientes se eligen según
+ese rol, no según quién publica el pago: la sucursal usa su cuenta con la
+casa central y la casa central usa su cuenta con sucursales. Entre dos
+sucursales no cambia. La intercompañía se asienta por el bruto, que incluye
+las retenciones: esas retenciones permanecen en quien paga. Los pagos
+parciales, por un importe menor que la deuda, siguen sin estar soportados.
 
 Los pagos ya publicados sin ese puente se corrigen con la acción
 «Regularizar pago existente». Esa regularización sigue exigiendo el importe
@@ -27,7 +31,7 @@ Depende de account_payment_pro, l10n_ar_tax y l10n_latam_check_ux para que
 el reparto entre sucursales corra después del ajuste de retenciones y de
 las líneas de cheques. No envía correos ni trámites de AFIP.
 """,
-    "version": "19.0.1.3.5",
+    "version": "19.0.1.4.0",
     "category": "Accounting/Accounting",
     "author": "Kaizendo",
     "license": "LGPL-3",

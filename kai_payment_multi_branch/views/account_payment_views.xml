@@ -19,7 +19,7 @@
                 <field name="kai_foreign_company_count" invisible="1"/>
                 <field name="kai_advance_company_candidate_ids" invisible="1"/>
                 <field name="kai_advance_company_id"
-                       invisible="kai_foreign_company_count &lt; 2"
+                       invisible="kai_foreign_company_count &lt; 1"
                        readonly="state != 'draft'"
                        options="{'no_create': True, 'no_open': True}"
                        domain="[('id', 'in', kai_advance_company_candidate_ids)]"/>
