@@ -1872,7 +1872,9 @@ class TestMultiBranchPayment(TransactionCase):
         )
         self.assertEqual(len(payable), 1)
         self.assertEqual(payable.partner_id, self.vendor.commercial_partner_id)
-        self.assertAlmostEqual(payable.balance, 80.0, places=2)
+        # Yesterday no tiene factura propia: la línea a pagar es solo el anticipo.
+        # Los 50 de Fisa van a la cuenta corriente y el pago de 80 cierra el asiento.
+        self.assertAlmostEqual(payable.balance, 30.0, places=2)
         self.assertAlmostEqual(payable.amount_residual, 30.0, places=2)
         self.assertFalse(payable.reconciled)
         cc = payment.move_id.line_ids.filtered(
